@@ -21,10 +21,10 @@
 #include <atomic>
 #include <condition_variable>
 #include <fcntl.h>
-#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "media.h"
@@ -181,12 +181,11 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
         switch (status) {
             case Status::kOk: {
                 if (auto track_alias = GetTrackAlias(); track_alias.has_value()) {
-                    SPDLOG_INFO("Track alias: {0} is ready to read", track_alias.value());
+                    SPDLOG_ERROR("Track alias: {0} is ready to read", track_alias.value());
                     if (qclient_vars::new_group) {
-                        SPDLOG_INFO("Track alias: {0} requesting new group", track_alias.value());
+                        SPDLOG_ERROR("Track alias: {0} requesting new group", track_alias.value());
                         RequestNewGroup();
                     }
-                    SPDLOG_ERROR("Track alias: {0} is ready to read", track_alias.value());
                 }
             } break;
 
