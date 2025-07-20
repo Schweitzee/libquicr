@@ -115,7 +115,7 @@ void CMafParser::ProcessMoov(const MP4Atom& moov) const
         return;
     }
 
-    DataDump("mmov" , moov.data.data(), moov.data.size());
+    DataDump("moov" , moov.data.data(), moov.data.size());
 
     // Scan through moov box to find the trak boxes
     size_t offset = 8; // Skip moov header
