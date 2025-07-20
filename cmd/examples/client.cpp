@@ -20,6 +20,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <fcntl.h>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -790,6 +791,9 @@ DoSubscriber(const quicr::FullTrackName& full_track_name,
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        //performance log és track váltás szükséges
+
     }
 
     client->UnsubscribeTrack(track_handler);
@@ -1038,6 +1042,7 @@ main(int argc, char* argv[])
         std::thread pub_thread;
         std::thread sub_thread;
         std::thread fetch_thread;
+        std::thread parse_thread;
 
         if (result.count("sub_announces")) {
             const auto& prefix_ns = quicr::example::MakeFullTrackName(result["sub_announces"].as<std::string>(), "");
@@ -1110,6 +1115,10 @@ main(int argc, char* argv[])
 
         stop_threads = true;
         SPDLOG_ERROR("Stopping threads...");
+
+        if (parse_thread.joinable()) {
+            parse_thread.join();
+        }
 
         if (pub_thread.joinable()) {
             pub_thread.join();
