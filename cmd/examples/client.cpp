@@ -24,7 +24,6 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 #include "media.h"
@@ -167,6 +166,13 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
         // std::cout << msg;
         fwrite(data.data(), data.size(), 1, stdout);
         fflush(stdout);
+
+        //     std::cerr << "Subscriber fragment hex dump:\n";
+        //     for (size_t i = 0; i < std::min<size_t>(data.size(), 32); ++i) {
+        //         std::cerr << std::hex << std::setw(2) << std::setfill('0')
+        //                   << static_cast<int>(data[i]) << " ";
+        //     }
+        //     std::cerr << std::dec << "\n";
     }
 
     void StatusChanged(Status status) override
@@ -1062,7 +1068,7 @@ main(int argc, char* argv[])
                                                                result["pub_name"].as<std::string>());
 
                 pub_thread = std::thread(DoPublisher, pub_track_name, client, use_announce, std::ref(stop_threads));
-            }else {
+            } else {
                 auto shared_state = std::make_shared<SharedState>();
 
                 parse_thread = std::thread(DoParse, shared_state, std::ref(stop_threads));
@@ -1116,7 +1122,7 @@ main(int argc, char* argv[])
         stop_threads = true;
         SPDLOG_ERROR("Stopping threads...");
 
-        if (parse_thread.joinable()) {
+        if (qclient_vars::video && parse_thread.joinable()) {
             parse_thread.join();
         }
 

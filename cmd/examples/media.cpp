@@ -84,14 +84,19 @@ void CMafParser::ParseBuffer(const uint8_t* buffer, size_t buffer_size) {
         atom.data.assign(buffer + offset, buffer + offset + atom_size);
 
         if (atom_type == "ftyp") {
+            std::cout << "ftype mutex lock" << std::endl;
             std::lock_guard<std::mutex> lock(state.mtx);
             state.ftyp = atom;
+            std::cout << "ftype mutex unlock" << std::endl;
+
         } else if (atom_type == "moov") {
             ProcessMoov(atom); // Extract track info from moov
+            std::cout << "moov mutex lock" << std::endl;
             std::lock_guard<std::mutex> lock(state.mtx);
             state.moov = atom;
             state.catalog_ready = true;
             state.cv.notify_all();
+            std::cout << "moov mutex unlock" << std::endl;
         } else if (atom_type == "moof") {
             atom.track_id = ExtractTrackIdFromMoof(atom);
             std::cout << "moof tr_id:" << atom.track_id << std::endl;
@@ -230,10 +235,12 @@ void CMafParser::ProcessTrack(const uint8_t* trak_data, uint32_t trak_size) cons
             video_track->height = height;
             video_track->codec = codec;
             track = video_track;
+            std::cout << "Video track created with width: " << width << ", height: " << height << std::endl;
         } else if (handler_type == "soun") {
             auto audio_track = std::make_shared<SoundTrack>();
             audio_track->codec = codec;
             track = audio_track;
+                std::cout << "Audio track created" << std::endl;
         } else {
             // Generic track for other types
             track = std::make_shared<Track>();
@@ -241,10 +248,10 @@ void CMafParser::ProcessTrack(const uint8_t* trak_data, uint32_t trak_size) cons
 
         track->index = track_id;
         track->name = handler_type;
-
+        std::cout << "mutex lock" << std::endl;
         std::lock_guard<std::mutex> lock(state.mtx); //ez lesz a baj
         state.tracks.push_back(track);
-
+        std::cout << "mutex unlock" << std::endl;
     }
 
 }
@@ -269,20 +276,22 @@ void CMafParser::ProcessFragments(const std::vector<MP4Atom>& atoms) const
                 fragment.is_keyframe = HasKeyframe(*last_moof);
 
                 // Find the appropriate track and add the fragment
-                std::lock_guard<std::mutex> lock(state.mtx);
+                std::cout << "mutex lock" << std::endl;
+
                 for (auto& track : state.tracks) {
                     if (track->index == track_id) {
                         std::cout << "Fragment for track " << track->name << " (ID: " << track_id << ")"
                                   << ", size: " << fragment.mdat.data.size()
                                   << ", keyframe: " << fragment.is_keyframe << std::endl;
+                        std::cout << "track mutex lock" << std::endl;
                         std::lock_guard<std::mutex> track_lock(track->mtx);
                         track->chunks.push_back(fragment);
+                        std::cout << "track mutex unlock" << std::endl;
                         break;
                     }
                 }
-
-                state.new_data_available = true;
                 state.cv.notify_all();
+                std::cout << "mutex unlock" << std::endl;
             }
             last_moof = nullptr;
         }
@@ -390,8 +399,10 @@ void DoParse(std::shared_ptr<SharedState> shared_state, const bool& stop) {
     while (!stop) {
         ssize_t bytes_read = read(STDIN_FILENO, temp.data(), read_chunk);
         if (bytes_read <= 0) {
+            std::cout << "mutex lock <=0 ENDING___" << std::endl;
             std::lock_guard<std::mutex> lock(shared_state->mtx);
             shared_state->cv.notify_all();
+            std::cout << "mutex unlock <=0 ENDING___" << std::endl;
             break;
         }
         buffer.insert(buffer.end(), temp.begin(), temp.begin() + bytes_read);
@@ -404,10 +415,12 @@ void DoParse(std::shared_ptr<SharedState> shared_state, const bool& stop) {
 
             if (atom_size == 1) {
                 // Extended size not supported in this example
+                std::cerr << "Extended atom size not supported" << std::endl;
                 break;
             }
             if (atom_size == 0 || atom_size > buffer.size()) {
                 // Not enough data for a full atom yet
+                std::cerr << "Incomplete atom or invalid size: " << atom_size << std::endl;
                 break;
             }
 
@@ -432,5 +445,6 @@ void DoParse(std::shared_ptr<SharedState> shared_state, const bool& stop) {
             }
         }
     }
+    std::cout << "Parsing stopped." << std::endl;
 }
 

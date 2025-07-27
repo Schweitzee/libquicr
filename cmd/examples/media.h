@@ -1,13 +1,10 @@
 #pragma once
+#include <deque>
 
 namespace quicr {
     struct FullTrackName;
 }
 
-extern "C"
-{
-#include <libavformat/avformat.h>
-}
 
 #include <condition_variable>
 #include <memory>
@@ -19,7 +16,7 @@ extern "C"
 struct MP4Atom {
   std::string type;
   std::vector<uint8_t> data;
-  uint64_t size;
+  uint64_t size = 0;
   int track_id = -1;  // Will be set for moof atoms
 };
 
@@ -45,8 +42,9 @@ public:
   std::string name;
   TrackType type;
   std::string codec;
-  std::vector<MP4Chunk> chunks;
+  std::deque<MP4Chunk> chunks;
   mutable std::mutex mtx;
+  std::condition_variable cv;
 
   virtual ~Track() = default;
 };
@@ -55,7 +53,6 @@ struct SharedState {
   std::vector<std::shared_ptr<Track>> tracks;
   std::vector<quicr::FullTrackName> track_names;
   bool catalog_ready = false;
-  bool new_data_available = false;
 
   MP4Atom ftyp;
   MP4Atom moov;
