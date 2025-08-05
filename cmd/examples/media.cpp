@@ -350,11 +350,11 @@ bool CMafParser::HasKeyframe(const MP4Atom& moof) {
     return false;
 }
 
-void DoParse(std::shared_ptr<SharedState> shared_state, const bool& stop) {
+void DoParse(const std::shared_ptr<SharedState>& shared_state, const std::atomic<bool>& stop) {
     CMafParser parser(*shared_state);
 
     std::deque<uint8_t> buffer;
-    const size_t read_chunk = 4096;
+    constexpr size_t read_chunk = 4096;
     std::vector<uint8_t> temp(read_chunk);
 
     while (!stop) {
