@@ -151,7 +151,7 @@ struct SharedState {
     cv.notify_one();
   }
 
-  MP4Chunk GetChunk(const bool& exit)
+  MP4Chunk GetChunk(const std::atomic<bool>& exit)
   {
     std::unique_lock<std::mutex> lock(s_mtx);
     if (!chunks.empty()) {
@@ -160,7 +160,7 @@ struct SharedState {
       std::cout << "Chunks in shared state: " << chunks.size() << std::endl;
       return chunk;
     }
-    cv.wait(lock, [this, exit]() { return !chunks.empty() || exit;});
+    cv.wait(lock, [this, &exit]() { return !chunks.empty() || exit;});
     if (exit) {return MP4Chunk();} // Return empty chunk if exit is requested
     MP4Chunk chunk = chunks.front();
     chunks.pop_front();
@@ -172,9 +172,9 @@ struct SharedState {
   {
     cv.notify_all();
   }
-
-
 };
+
+void DoParse(const std::shared_ptr<SharedState>& shared_state, const std::atomic<bool>& stop);
 
 class CMafParser
 {
@@ -191,5 +191,3 @@ private:
   void ProcessTrack(const uint8_t* trak_data, uint32_t trak_size) const;
   void ProcessFragments(const std::vector<MP4Atom>& atoms) const;
 };
-
-void DoParse(std::shared_ptr<SharedState> shared_state, const bool& stop);
