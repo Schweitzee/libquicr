@@ -20,7 +20,6 @@
 
 #include <condition_variable>
 #include <fcntl.h>
-#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -464,7 +463,7 @@ struct THData
 /*===========================================================================*/
 
 void
-DoPublisher2(std::shared_ptr<SharedState> shared_state, const std::shared_ptr<quicr::Client>& client, const bool& stop)
+DoPublisher2(std::shared_ptr<SharedState> shared_state, const std::shared_ptr<quicr::Client>& client, const std::atomic<bool>& stop)
 {
     std::vector<std::shared_ptr<MyPublishTrackHandler>> track_handlers;
     std::vector<std::shared_ptr<Track>> tracks;
@@ -589,6 +588,9 @@ DoPublisher2(std::shared_ptr<SharedState> shared_state, const std::shared_ptr<qu
         data_to_publish.insert(data_to_publish.end(), chunk.mdat.data.begin(), chunk.mdat.data.end());
 
         track_handlers[0]->PublishObject(obj_headers, data_to_publish);
+        SPDLOG_INFO("Published object: group_id: {}, object_id: {}",
+                    TrackHeaderData.group_id, TrackHeaderData.object_id - 1);
+        //std::cout << "Published object: group_id: " << TrackHeaderData.group_id << ", size: " << data_to_publish.size() << std::endl;
     }
 
     client->UnpublishTrack(track_handlers[0]);
@@ -1051,6 +1053,7 @@ main(int argc, char* argv[])
 
     try {
         bool stop_threads{ false };
+        std::atomic<bool> atomic_stop{ false };
         auto client = std::make_shared<MyClient>(config, stop_threads);
 
         if (client->Connect() != quicr::Transport::Status::kConnecting) {
@@ -1093,7 +1096,7 @@ main(int argc, char* argv[])
             } else {
                 auto shared_state = std::make_shared<SharedState>();
 
-                parse_thread = std::thread(DoParse, shared_state, std::ref(stop_threads));
+                parse_thread = std::thread(DoParse, shared_state, std::ref(atomic_stop));
 
                 shared_state->cv.wait(lock, [&]() {
                 return shared_state->catalog_ready || moq_example::terminate;
@@ -1106,7 +1109,7 @@ main(int argc, char* argv[])
                     shared_state->track_names.push_back(pub_track_name);
                 }
 
-                pub_thread = std::thread(DoPublisher2, shared_state, client, std::ref(stop_threads));
+                pub_thread = std::thread(DoPublisher2, shared_state, client, std::ref(atomic_stop));
             }
         }
         if (enable_sub) {
@@ -1142,6 +1145,7 @@ main(int argc, char* argv[])
         moq_example::cv.wait(lock, [&]() { return moq_example::terminate; });
 
         stop_threads = true;
+        atomic_stop = true;
         //SPDLOG_ERROR("Stopping threads...");
         std::cerr << "Stopping threads..." << std::endl;
         if (parse_thread.joinable()) {
