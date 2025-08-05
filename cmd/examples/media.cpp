@@ -1,10 +1,8 @@
 #include "media.h"
-
-#include <iostream>
-#include <iomanip>
 #include <algorithm>
 #include <deque>
-
+#include <iomanip>
+#include <iostream>
 
 void DataDump(std::string type, const uint8_t* data, size_t size) {
     std::cout << "Dumping " << type << " (" << size << " bytes):" << std::endl;
@@ -84,26 +82,15 @@ void CMafParser::ParseBuffer(const uint8_t* buffer, size_t buffer_size) {
         atom.data.assign(buffer + offset, buffer + offset + atom_size);
 
         if (atom_type == "ftyp") {
-            std::cout << "ftype mutex lock" << std::endl;
-            std::lock_guard<std::mutex> lock(state.mtx);
-            state.ftyp = atom;
-            std::cout << "ftype mutex unlock" << std::endl;
-
+            state.setFtyp(atom);
         } else if (atom_type == "moov") {
             ProcessMoov(atom); // Extract track info from moov
-            std::cout << "moov mutex lock" << std::endl;
-            std::lock_guard<std::mutex> lock(state.mtx);
-            state.moov = atom;
-            state.catalog_ready = true;
-            state.cv.notify_all();
-            std::cout << "moov mutex unlock" << std::endl;
+            state.setMoov(atom);
         } else if (atom_type == "moof") {
             atom.track_id = ExtractTrackIdFromMoof(atom);
-            std::cout << "moof tr_id:" << atom.track_id << std::endl;
             atoms.push_back(atom);
         } else if (atom_type == "mdat") {
             atoms.push_back(atom);
-            std::cout << "mdat" << std::endl;
         }
 
         offset += atom_size;
@@ -146,9 +133,7 @@ void CMafParser::ProcessTrack(const uint8_t* trak_data, uint32_t trak_size) cons
     int width = 0, height = 0;
     std::string codec;
 
-    //ataDump("trak", trak_data, trak_size);
-
-
+    //DataDump("trak", trak_data, trak_size);
 
     // Parse track header (tkhd) for track_id, width, height
     size_t offset = 8; // Skip trak header
@@ -228,32 +213,23 @@ void CMafParser::ProcessTrack(const uint8_t* trak_data, uint32_t trak_size) cons
     // Create appropriate track based on handler_type
     if (track_id != -1) {
         std::shared_ptr<Track> track;
-        std::cout << "track_id: " << track_id << std::endl;
         if (handler_type == "vide") {
-            auto video_track = std::make_shared<VideoTrack>();
-            video_track->width = width;
-            video_track->height = height;
+            auto video_track = std::make_shared<VideoTrack>(track_id, "Video Track", width, height);
             video_track->codec = codec;
             track = video_track;
             std::cout << "Video track created with width: " << width << ", height: " << height << std::endl;
         } else if (handler_type == "soun") {
-            auto audio_track = std::make_shared<SoundTrack>();
+            auto audio_track = std::make_shared<SoundTrack>(track_id, "Audio Track");
             audio_track->codec = codec;
             track = audio_track;
                 std::cout << "Audio track created" << std::endl;
         } else {
             // Generic track for other types
-            track = std::make_shared<Track>();
+            track = std::make_shared<Track>(track_id, "? Track");
         }
 
-        track->index = track_id;
-        track->name = handler_type;
-        std::cout << "mutex lock" << std::endl;
-        std::lock_guard<std::mutex> lock(state.mtx); //ez lesz a baj
-        state.tracks.push_back(track);
-        std::cout << "mutex unlock" << std::endl;
+        state.AddTrack(track);
     }
-
 }
 
 // Process fragments and associate them with tracks
@@ -261,39 +237,24 @@ void CMafParser::ProcessFragments(const std::vector<MP4Atom>& atoms) const
 {
     if (atoms.empty()) return;
 
-    MP4Atom* last_moof = nullptr;
+    MP4Atom last_moof;
 
     for (size_t i = 0; i < atoms.size(); i++) {
         if (atoms[i].type == "moof") {
-            last_moof = const_cast<MP4Atom*>(&atoms[i]);
-        } else if (atoms[i].type == "mdat" && last_moof) {
-            int track_id = last_moof->track_id;
-            if (track_id != -1) {
-                MP4Chunk fragment;
-                fragment.moof = *last_moof;
-                fragment.mdat = atoms[i];
-                fragment.track_id = track_id;
-                fragment.is_keyframe = HasKeyframe(*last_moof);
+            last_moof = atoms[i];
+        } else if (atoms[i].type == "mdat" && last_moof.track_id != -1) {
+            int track_id = last_moof.track_id;
+            MP4Chunk chunk;
+            chunk.moof = last_moof;
+            chunk.mdat = atoms[i];
+            chunk.track_id = track_id;
+            chunk.is_keyframe = HasKeyframe(last_moof);
 
-                // Find the appropriate track and add the fragment
-                std::cout << "mutex lock" << std::endl;
-
-                for (auto& track : state.tracks) {
-                    if (track->index == track_id) {
-                        std::cout << "Fragment for track " << track->name << " (ID: " << track_id << ")"
-                                  << ", size: " << fragment.mdat.data.size()
-                                  << ", keyframe: " << fragment.is_keyframe << std::endl;
-                        std::cout << "track mutex lock" << std::endl;
-                        std::lock_guard<std::mutex> track_lock(track->mtx);
-                        track->chunks.push_back(fragment);
-                        std::cout << "track mutex unlock" << std::endl;
-                        break;
-                    }
-                }
-                state.cv.notify_all();
-                std::cout << "mutex unlock" << std::endl;
-            }
-            last_moof = nullptr;
+            std::cout << "Fragment for track ID: " << track_id
+                << ", size: " << chunk.mdat.data.size()
+                << ", keyframe: " << chunk.is_keyframe << std::endl;
+            state.PutChunk(chunk);
+            last_moof = MP4Atom(); // Reset last_moof after processing
         }
     }
 }
@@ -400,9 +361,7 @@ void DoParse(std::shared_ptr<SharedState> shared_state, const bool& stop) {
         ssize_t bytes_read = read(STDIN_FILENO, temp.data(), read_chunk);
         if (bytes_read <= 0) {
             std::cout << "mutex lock <=0 ENDING___" << std::endl;
-            std::lock_guard<std::mutex> lock(shared_state->mtx);
             shared_state->cv.notify_all();
-            std::cout << "mutex unlock <=0 ENDING___" << std::endl;
             break;
         }
         buffer.insert(buffer.end(), temp.begin(), temp.begin() + bytes_read);
@@ -446,5 +405,6 @@ void DoParse(std::shared_ptr<SharedState> shared_state, const bool& stop) {
         }
     }
     std::cout << "Parsing stopped." << std::endl;
+    shared_state->cv.notify_all();
 }
 
