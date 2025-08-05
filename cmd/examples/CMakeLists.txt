@@ -6,7 +6,7 @@ include(FetchContent)
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
 FetchContent_MakeAvailable(json)
 
-add_executable(qclient client.cpp)
+add_executable(qclient client.cpp media.cpp media.h)
 target_link_libraries(qclient PRIVATE quicr nlohmann_json::nlohmann_json)
 target_include_directories(qclient PRIVATE ../dependencies )
 
