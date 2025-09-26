@@ -1,18 +1,15 @@
 #pragma once
 
-#include <deque>
-#include <iostream>
-
-namespace quicr {
-    struct FullTrackName;
-}
-
-
 #include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+#include <deque>
+#include <iostream>
+
+#include "catalog.hpp"
+
 
 
 struct MP4Atom {
@@ -30,45 +27,6 @@ struct MP4Chunk {
   bool is_keyframe = false; // Indicates if this fragment contains a keyframe
 };
 
-enum class TrackType
-{
-  VIDEO,
-  AUDIO,
-  SUBTITLE,
-  ELSE,
-};
-
-class Track
-{
-  std::mutex t_mtx;
-  std::condition_variable cv;
-
-public:
-  int index;
-  std::string name;
-  TrackType type;
-  std::string codec;
-
-  Track(int idx, const std::string track_name)
-      : index(idx), name(track_name) {}
-
-  virtual ~Track() = default;
-};
-
-class VideoTrack : public Track
-{
-  public:
-    int Width, Height;
-
-    VideoTrack(int idx, const std::string track_name, int width, int height) : Track(idx,track_name), Width(width), Height(height) { type = TrackType::VIDEO; }
-};
-
-class SoundTrack : public Track
-{
-  public:
-    SoundTrack(int idx, const std::string track_name) : Track(idx,track_name) { type = TrackType::AUDIO; }
-};
-
 class SharedState {
   std::deque<std::shared_ptr<MP4Chunk>> chunks;
 
@@ -79,16 +37,8 @@ class SharedState {
   std::condition_variable cv;
 
 public:
+    Catalog catalog;
     bool catalog_ready = false;
-    std::vector<std::shared_ptr<Track>> tracks;
-    std::vector<quicr::FullTrackName> track_names;
-
-  void AddTrack(std::shared_ptr<Track> track)
-  {
-    std::lock_guard<std::mutex> lock(s_mtx);
-    tracks.push_back(track);
-    std::cout << "Track added to shared state, Tracks: " << tracks.size() << std::endl;
-  }
 
   void WaitForCatalogReady(const bool& stop_threads)
   {
@@ -107,15 +57,16 @@ public:
     std::lock_guard<std::mutex> lock(s_mtx);
     return moov;
   }
+
   void setFtyp(const MP4Atom& atom) {
     std::lock_guard<std::mutex> lock(s_mtx);
     ftyp = atom;
   }
+
   void setMoov(const MP4Atom& atom) {
     {
       std::lock_guard<std::mutex> lock(s_mtx);
       moov = atom;
-      catalog_ready = true;
     }
     cv.notify_all();
   }
@@ -155,7 +106,6 @@ public:
 };
 
 void DoParse(const std::shared_ptr<SharedState>& shared_state, const bool& stop);
-void DoParse2(const std::shared_ptr<SharedState>& shared_state, const bool& stop);
 
 class CMafParser
 {
