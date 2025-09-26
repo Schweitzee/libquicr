@@ -145,8 +145,11 @@ void CMafParser::ParseBuffer(const uint8_t* buffer, size_t buffer_size) {
         if (atom_type == "ftyp") {
             state.setFtyp(atom);
         } else if (atom_type == "moov") {
+            state.catalog.clear();
             ProcessMoov(atom); // Extract track info from moov
+            state.catalog.validate();
             state.setMoov(atom);
+            state.catalog_ready = true;
         } else if (atom_type == "moof") {
             atom.track_id = ExtractTrackIdFromMoof(atom);
             atoms.push_back(atom);
@@ -273,23 +276,14 @@ void CMafParser::ProcessTrack(const uint8_t* trak_data, uint32_t trak_size) cons
 
     // Create appropriate track based on handler_type
     if (track_id != -1) {
-        std::shared_ptr<Track> track;
+        std::cout << "track_id: " << track_id << "type: " << handler_type << std::endl;
         if (handler_type == "vide") {
-            auto video_track = std::make_shared<VideoTrack>(track_id, "Video Track", width, height);
-            video_track->codec = codec;
-            track = video_track;
-            std::cout << "Video track created with width: " << width << ", height: " << height << std::endl;
+            state.catalog.add_video("video"+std::to_string(track_id), track_id, width, height, codec);
         } else if (handler_type == "soun") {
-            auto audio_track = std::make_shared<SoundTrack>(track_id, "Audio Track");
-            audio_track->codec = codec;
-            track = audio_track;
-                std::cout << "Audio track created" << std::endl;
+            state.catalog.add_audio("sound" + std::to_string(track_id), track_id, "und", codec);
         } else {
-            // Generic track for other types
-            track = std::make_shared<Track>(track_id, "? Track");
+            state.catalog.add_else("Undefined_track_"  + std::to_string(track_id), track_id);
         }
-
-        state.AddTrack(track);
     }
 }
 
@@ -415,82 +409,7 @@ bool CMafParser::HasKeyframe(const MP4Atom& moof) {
     return false;
 }
 
-void DoParse(const std::shared_ptr<SharedState>& shared_state, const bool& stop) {
-    CMafParser parser(*shared_state);
-
-    std::deque<uint8_t> buffer;
-    constexpr size_t read_chunk = 2048 * 16;
-    std::vector<uint8_t> temp(read_chunk);
-
-    try{
-       while (!stop) {
-           ssize_t bytes_read = read(STDIN_FILENO, temp.data(), read_chunk);
-           if (bytes_read <= 0) {
-               std::cout << "mutex lock <=0 ENDING___" << std::endl;
-               shared_state->NotifyAll();
-               break;
-           }
-           buffer.insert(buffer.end(), temp.begin(), temp.begin() + bytes_read);
-
-           // Process as many complete atoms as possible
-           while (buffer.size() >= 8) {
-               // Parse atom header
-               uint32_t atom_size = (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
-               std::string atom_type(reinterpret_cast<const char*>(&buffer[4]), 4);
-
-               if (atom_size == 1) {
-                   // Extended size not supported in this example
-                   std::cerr << "Extended atom size not supported" << std::endl;
-                   break;
-               }
-               if (atom_size == 0 || atom_size > buffer.size()) {
-                   // Not enough data for a full atom yet
-                   std::cerr << "Incomplete atom or invalid size: " << atom_size << std::endl;
-                   break;
-               }
-
-               // Special handling for moof+mdat
-               if (atom_type == "moof") {
-                   // Check if next atom is mdat
-                   if (buffer.size() < atom_size + 8) {
-                        std::cout << "Not enough data for moof + next header, size: " << buffer.size() << std::endl;
-                       break;
-                   } // Not enough for moof + next header
-                   uint32_t next_atom_size = (buffer[atom_size] << 24) | (buffer[atom_size+1] << 16) |
-                                             (buffer[atom_size+2] << 8) | buffer[atom_size+3];
-                   std::string next_atom_type(reinterpret_cast<const char*>(&buffer[atom_size+4]), 4);
-                   if (next_atom_type != "mdat" || buffer.size() < atom_size + next_atom_size) {
-                        std::cout << "next atom is not mdat, or buffer smaller than the two atoms type: " << next_atom_type << std::endl;
-                       break;
-                   }
-
-                   // Pass moof+mdat together
-                   std::cout << "next atom moof + mdat" << std::endl;
-                   std::vector<uint8_t> atoms(buffer.begin(), buffer.begin() + atom_size + next_atom_size);
-                   parser.ParseBuffer(atoms.data(), atoms.size());
-                   buffer.erase(buffer.begin(), buffer.begin() + atom_size + next_atom_size);
-               } else {
-                   std::cout << "next atom ftype or moov" << std::endl;
-                   // Pass single atom
-                   std::vector<uint8_t> atom(buffer.begin(), buffer.begin() + atom_size);
-                   parser.ParseBuffer(atom.data(), atom.size());
-                   buffer.erase(buffer.begin(), buffer.begin() + atom_size);
-               }
-           }
-       }
-       std::cout << "Parsing while loop exited, stop bool state:" << stop << std::endl;
-
-       shared_state->NotifyAll();
-    }
-    catch (const std::exception& e) {
-        std::cerr << "EXCEPTIOOOON: " << e.what() << std::endl;
-    }
-    catch (...) {
-        std::cerr << "Unknown exception occurred during parsing." << std::endl;
-    }
-}
-
-void DoParse2(const std::shared_ptr<SharedState>& shared_state,const bool& stop)
+void DoParse(const std::shared_ptr<SharedState>& shared_state,const bool& stop)
 {
     CMafParser parser(*shared_state);
 

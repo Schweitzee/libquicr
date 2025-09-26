@@ -8,7 +8,7 @@ FetchContent_MakeAvailable(json)
 
 add_executable(qclient client.cpp)
 target_link_libraries(qclient PRIVATE quicr nlohmann_json::nlohmann_json)
-target_include_directories(qclient PRIVATE ../dependencies )
+target_include_directories(qclient PRIVATE ../dependencies)
 
 target_compile_options(qclient
         PRIVATE
@@ -23,7 +23,11 @@ set_target_properties(qclient
 
 target_compile_definitions(qclient PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
 
-add_executable(qclient2 client2.cpp media.h media.cpp)
+add_executable(qclient2
+        client2.cpp
+        media.h
+        media.cpp
+        catalog.hpp)
 target_link_libraries(qclient2 PRIVATE quicr nlohmann_json::nlohmann_json)
 target_include_directories(qclient2 PRIVATE ../dependencies )
 
@@ -63,4 +67,5 @@ if(LINT)
         include(Lint)
         Lint(qserver)
         Lint(qclient)
+        Lint(qclient2)
 endif()
