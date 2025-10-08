@@ -7,6 +7,12 @@
 #include <iomanip>
 #include <iostream>
 
+#include <cstring>
+
+#include "async_stdin_reader.h"
+
+static bool is4(const char* t, const char* s) noexcept { return std::memcmp(t,s,4)==0; }
+
 void DataDump(std::string type, const uint8_t* data, size_t size) {
     std::cout << "Dumping " << type << " (" << size << " bytes):" << std::endl;
     const int CHARS_PER_ROW = 64;
@@ -312,7 +318,10 @@ void CMafParser::ProcessFragments(const std::vector<MP4Atom>& atoms) const
             //std::cout << "Fragment for track ID: " << track_id
             //    << ", size: " << chunk_ptr->mdat.data.size()
             //    << ", keyframe: " << chunk_ptr->is_keyframe << std::endl;
-            state.PutChunk(chunk_ptr);
+            //state.PutChunk(chunk_ptr);
+            while (!state.chunk_q.try_enqueue(state.prod_tok, chunk_ptr)) {
+                std::this_thread::yield(); // vagy sleep_for(50us)
+            }
             last_moof = MP4Atom(); // Reset last_moof after processing
         }
     }
@@ -409,8 +418,12 @@ bool CMafParser::HasKeyframe(const MP4Atom& moof) {
     return false;
 }
 
-void DoParse(const std::shared_ptr<SharedState>& shared_state,const bool& stop)
+
+void DoParse(const std::shared_ptr<PublisherSharedState>& shared_state,const bool& stop)
 {
+    std::ios::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+
     CMafParser parser(*shared_state);
 
     // -------- helper-ek (header olvasás, méretkezelés) --------
@@ -442,28 +455,51 @@ void DoParse(const std::shared_ptr<SharedState>& shared_state,const bool& stop)
         return b.size() >= off + h.size;
     };
     auto skippable_between_moof_mdat = [&](const char* t)->bool{
-        return std::string(t)=="free" || std::string(t)=="skip" ||
-               std::string(t)=="prft" || std::string(t)=="sidx" ||
-               std::string(t)=="mfra" || std::string(t)=="uuid";
+        return is4(t,"free") || is4(t,"skip") || is4(t,"prft") || is4(t,"sidx") ||
+               is4(t,"mfra") || is4(t,"uuid") || is4(t,"emsg") || is4(t,"meta");
     };
 
     // -------- bemeneti puffer + állapotgép --------
-    std::vector<uint8_t> buf; buf.reserve(1<<20);
+    std::vector<uint8_t> buf; buf.reserve(2<<20);
     size_t head = 0;
     enum class Phase { INIT, STREAM };
     Phase phase = Phase::INIT;
 
-    size_t moof_off = 0, moof_size = 0;
+    struct Pending { size_t off; size_t size; };
+    std::vector<Pending> moof_stack; moof_stack.reserve(8);
     uint64_t chunk_count = 0;
 
     auto compact = [&](){
-        if (head > (1<<20)) { buf.erase(buf.begin(), buf.begin()+head); head = 0; }
+        // védjük a legkorábbi függő moof-ot (ne töröljük a hozzá tartozó bájtokat)
+        size_t protect = head;
+        if (!moof_stack.empty()) {
+            size_t earliest = moof_stack[0].off;
+            for (const auto& p : moof_stack) if (p.off < earliest) earliest = p.off;
+            if (earliest < protect) protect = earliest;
+        }
+        const size_t THRESH = (2<<20);
+        if (protect > THRESH) {
+            buf.erase(buf.begin(), buf.begin()+protect);
+            head -= protect;
+            for (auto& p : moof_stack) p.off -= protect;
+        }
     };
 
     // ha a meglévő kódod nem stdin-ről olvas, ezt a blokkot nyugodtan hagyd meg,
     // csak az append útját igazítsd a te input forrásodhoz:
-    constexpr size_t READ_CHUNK = 64*1024;
-    std::vector<char> in(READ_CHUNK);
+// #ifndef READ_CHUNK
+//     constexpr size_t READ_CHUNK = 128;
+// #endif
+//     std::vector<char> in(READ_CHUNK);
+
+    AsyncStdinReader::Config _rd_cfg;
+    _rd_cfg.chunk_size = 8*1024;
+    _rd_cfg.max_buffer_bytes = 0;
+    AsyncStdinReader reader(_rd_cfg);
+    reader.start();
+    std::vector<uint8_t> in;
+
+
 
     auto publish_chunk = [&](const uint8_t* moof_ptr, size_t moof_len,
                              const uint8_t* mdat_ptr, size_t mdat_len){
@@ -475,12 +511,10 @@ void DoParse(const std::shared_ptr<SharedState>& shared_state,const bool& stop)
         out.insert(out.end(), mdat_ptr, mdat_ptr + mdat_len);
 
         // >>> KEEP YOUR EXISTING "publish to shared_state" CALL HERE <<<
-        // pl.: shared_state->PushChunk(std::move(out));
         parser.ParseBuffer(out.data(), out.size());
 
         (void)out; // ha a fenti sort beteszed, ez törölhető
         ++chunk_count;
-        //SPDLOG_INFO("Chunk ready #{} (moof {} bytes + mdat {} bytes)", chunk_count, moof_len, mdat_len);
     };
 
     while (!stop) {
@@ -493,20 +527,16 @@ void DoParse(const std::shared_ptr<SharedState>& shared_state,const bool& stop)
 
             if (phase == Phase::INIT) {
                 // 1) ftyp/moov teljes és megvan? hagyd meg a saját hívásaidat változtatás nélkül.
-                if (std::string(h.type) == "ftyp") {
+                if (is4(h.type,"ftyp")) {
                     if (!full_avail(buf, head, h)) break;
-                    // >>> KEEP YOUR EXISTING FTYP HANDLER HERE <<<
-                    // például: ParseFtyp(&buf[head], h.size);
                     parser.ParseBuffer(&buf[head], h.size);
 
                     head += static_cast<size_t>(h.size);
                     progressed = true;
                     continue;
                 }
-                if (std::string(h.type) == "moov") {
+                if (is4(h.type,"moov")) {
                     if (!full_avail(buf, head, h)) break;
-                    // >>> KEEP YOUR EXISTING MOOV HANDLER HERE <<<
-                    // például: ParseMoov(&buf[head], h.size);
                     parser.ParseBuffer(&buf[head], h.size);
 
                     head += static_cast<size_t>(h.size);
@@ -515,72 +545,67 @@ void DoParse(const std::shared_ptr<SharedState>& shared_state,const bool& stop)
                 }
 
                 // 2) amikor elértünk az első moof-hoz, áttérünk STREAM módba
-                if (std::string(h.type) == "moof") {
+                if (is4(h.type,"moof")) {
                     if (!full_avail(buf, head, h)) break;
-                    moof_off = head;
-                    moof_size = static_cast<size_t>(h.size);
-                    head += moof_size;
+                    moof_stack.push_back({ head, static_cast<size_t>(h.size) });
+                    head += static_cast<size_t>(h.size);
                     phase = Phase::STREAM;
                     progressed = true;
-                    SPDLOG_INFO("Switching to STREAM phase (first moof seen, size={})", moof_size);
+                    SPDLOG_INFO("Switching to STREAM phase (first moof seen, size={})", h.size);
                     continue;
                 }
 
                 // 3) bármi más: ha teljes, ugorjuk (free/sidx/uuid stb.), ha nem teljes: várunk
                 if (!full_avail(buf, head, h)) break;
-                SPDLOG_INFO("INIT: skipping box {} (size={})", h.type, h.size);
+                SPDLOG_DEBUG("INIT: skipping box {} (size={})", h.type, h.size);
                 head += static_cast<size_t>(h.size);
                 progressed = true;
                 continue;
             }
-            else { // STREAM phase: moof + mdat párok
-                if (moof_size == 0) {
-                    // itt „moof” kell jöjjön
-                    if (std::string(h.type) != "moof") {
-                        if (!full_avail(buf, head, h)) break;
-                        SPDLOG_WARN("STREAM: expected moof, got {} — skipping (size={})", h.type, h.size);
-                        head += static_cast<size_t>(h.size);
-                        progressed = true;
-                        continue;
-                    }
+            else { // STREAM phase: interleaved moof/mdat támogatás
+                // moof: toljuk a veremre
+                if (is4(h.type,"moof")) {
                     if (!full_avail(buf, head, h)) break;
-                    moof_off = head;
-                    moof_size = static_cast<size_t>(h.size);
-                    head += moof_size;
-                    progressed = true;
-                    continue;
-                } else {
-                    // moof már megvan – keressük a hozzátartozó mdat-ot
-                    if (std::string(h.type) == "mdat") {
-                        if (h.size == 0) { SPDLOG_WARN("mdat size==0 in stream; waiting for end"); break; }
-                        if (!full_avail(buf, head, h)) break;
-                        size_t mdat_off = head;
-                        size_t mdat_size = static_cast<size_t>(h.size);
-
-                        // >>> KEEP YOUR EXISTING "MOOF+MDAT CHUNK READY" HANDLING IF YOU HAVE ONE <<<
-                        publish_chunk(buf.data()+moof_off, moof_size,
-                                      buf.data()+mdat_off, mdat_size);
-
-                        head += mdat_size;
-                        moof_off = 0; moof_size = 0; // új pár jöhet
-                        progressed = true;
-                        continue;
-                    }
-                    // Közbeékelődő, ártalmatlan boxok: ugorjuk
-                    if (skippable_between_moof_mdat(h.type)) {
-                        if (!full_avail(buf, head, h)) break;
-                        SPDLOG_INFO("STREAM: skipping {} between moof and mdat (size={})", h.type, h.size);
-                        head += static_cast<size_t>(h.size);
-                        progressed = true;
-                        continue;
-                    }
-                    // Váratlan box moof után, de mdat előtt: ugorjuk, hogy ne akadjon meg a parser
-                    if (!full_avail(buf, head, h)) break;
-                    SPDLOG_WARN("STREAM: unexpected {} between moof and mdat — skipping (size={})", h.type, h.size);
+                    moof_stack.push_back({ head, static_cast<size_t>(h.size) });
                     head += static_cast<size_t>(h.size);
                     progressed = true;
                     continue;
                 }
+                // mdat: párosítsuk a legutóbbi moof-fal
+                if (is4(h.type,"mdat")) {
+                    if (h.size == 0) { SPDLOG_WARN("mdat size==0 in stream; waiting for end"); break; }
+                    if (!full_avail(buf, head, h)) break;
+                    if (moof_stack.empty()) {
+                        SPDLOG_DEBUG("STREAM: mdat without pending moof — skipping (size={})", h.size);
+                        head += static_cast<size_t>(h.size);
+                        progressed = true;
+                        continue;
+                    }
+                    auto p = moof_stack.back(); moof_stack.pop_back();
+                    size_t mdat_off = head;
+                    size_t mdat_size = static_cast<size_t>(h.size);
+
+                    publish_chunk(buf.data()+p.off, p.size,
+                                  buf.data()+mdat_off, mdat_size);
+
+                    head += mdat_size;
+                    progressed = true;
+                    continue;
+                }
+                // Közbeékelődő, ártalmatlan boxok: ugorjuk
+                if (skippable_between_moof_mdat(h.type)) {
+                    if (!full_avail(buf, head, h)) break;
+                    SPDLOG_DEBUG("STREAM: skipping {} (size={})", h.type, h.size);
+                    head += static_cast<size_t>(h.size);
+                    progressed = true;
+                    continue;
+                }
+                // Váratlan box: ugorjuk, hogy ne akadjon meg a parser
+                if (!full_avail(buf, head, h)) break;
+                SPDLOG_DEBUG("STREAM: unexpected {} — skipping (size={})", h.type, h.size);
+                head += static_cast<size_t>(h.size);
+                progressed = true;
+                continue;
             }
         }
 
@@ -589,22 +614,23 @@ void DoParse(const std::shared_ptr<SharedState>& shared_state,const bool& stop)
         // --- ha nem tudtunk tovább lépni, olvassunk új adatot ---
         if (stop) break;
 
-        std::cin.read(in.data(), static_cast<std::streamsize>(in.size()));
-        std::streamsize got = std::cin.gcount();
-        if (got > 0) {
-            size_t old = buf.size();
-            buf.resize(old + static_cast<size_t>(got));
-            std::memcpy(buf.data()+old, in.data(), static_cast<size_t>(got));
+        if (!reader.pop(in, /*block=*/true, std::chrono::milliseconds(0))) {
+            if (reader.eof()) {
+                SPDLOG_INFO("Input EOF");
+                break;
+            }
             continue;
         }
-        if (std::cin.eof()) {
-            SPDLOG_INFO("Input EOF");
-            break;
+        if (!in.empty()) {
+            size_t old = buf.size();
+            buf.resize(old + in.size());
+            std::memcpy(buf.data() + old, in.data(), in.size());
         }
-        // opcionális: kis pihenő, ha busy-loopolna
-        // std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
     }
+    reader.stop();
 
     SPDLOG_INFO("DoParse finished");
 }
+
 

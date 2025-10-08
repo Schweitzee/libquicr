@@ -6,7 +6,9 @@ include(FetchContent)
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
 FetchContent_MakeAvailable(json)
 
-add_executable(qclient client.cpp)
+
+add_executable(qclient client.cpp
+        subscriber_util.h)
 target_link_libraries(qclient PRIVATE quicr nlohmann_json::nlohmann_json)
 target_include_directories(qclient PRIVATE ../dependencies)
 
@@ -27,9 +29,13 @@ add_executable(qclient2
         client2.cpp
         media.h
         media.cpp
-        catalog.hpp)
+        catalog.hpp
+        async_stdin_reader.cpp)
 target_link_libraries(qclient2 PRIVATE quicr nlohmann_json::nlohmann_json)
 target_include_directories(qclient2 PRIVATE ../dependencies )
+target_include_directories(qclient2 PRIVATE
+    ${CMAKE_SOURCE_DIR}/dependencies/concurrentqueue   # itt van a concurrentqueue.h
+    ${CMAKE_SOURCE_DIR}/dependencies)                   # ha más headerek is kellenek
 
 target_compile_options(qclient2
         PRIVATE

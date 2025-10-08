@@ -22,9 +22,7 @@ enum class TrackType
     ELSE,
   };
 
-class Catalog {
-public:
-  struct TrackEntry {
+struct TrackEntry {
     std::string name;
     std::string type;// "video" | "audio" | "subtitle" | "else"
     int idx;
@@ -33,39 +31,36 @@ public:
     std::optional<std::string> language;
     std::optional<std::string> codec;
 
-    quicr::FullTrackName FullTrackName_;
-
     static std::string lowercase(const std::string& s) {
-      std::string out = s;
-      std::transform(out.begin(), out.end(), out.begin(),
-                     [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-      return out;
+        std::string out = s;
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        return out;
     }
     void validate() const {
-      if (name.empty())  throw std::invalid_argument("TrackEntry: name is empty");
-      if (type.empty())  throw std::invalid_argument("TrackEntry: type is empty");
-      const auto t = lowercase(type);
-      if (t == "video") {
-        if (!width || !height || *width <= 0 || *height <= 0)
-          throw std::invalid_argument("Video track needs positive width/height");
-      } else if (t == "audio") {
-        if (!language || language->empty())
-          throw std::invalid_argument("Audio track needs non-empty language");
-      } else if (t == "subtitle" || t == "else") {
-        // ok
-      } else {
-        throw std::invalid_argument("Unknown track type: " + type);
-      }
+        if (name.empty())  throw std::invalid_argument("TrackEntry: name is empty");
+        if (type.empty())  throw std::invalid_argument("TrackEntry: type is empty");
+        const auto t = lowercase(type);
+        if (t == "video") {
+            if (!width || !height || *width <= 0 || *height <= 0)
+                throw std::invalid_argument("Video track needs positive width/height");
+        } else if (t == "audio") {
+            if (!language || language->empty())
+                throw std::invalid_argument("Audio track needs non-empty language");
+        } else if (t == "subtitle" || t == "else") {
+            // ok
+        } else {
+            throw std::invalid_argument("Unknown track type: " + type);
+        }
     }
+};
 
-    void SetFullTrackName(const quicr::FullTrackName& ftn) {
-      FullTrackName_ = ftn;
-    }
-  };
+class Catalog {
+public:
 
     std::string init_data_; // init data for all tracks (ftyp+moov)
     int binary_size; // size of the binary init data
-    std::string namespace_ = "bbb";
+    std::string namespace_;
 
 private:
   uint16_t version_ = 1;
@@ -142,7 +137,8 @@ public:
   void from_json(const std::string& s) {
     auto j = nlohmann::json::parse(s);
     version_ = j.value("version", static_cast<uint16_t>(1));
-    init_data_ = j.value("init_data", init_data_);
+    init_data_ = j.value("init_data_b64", init_data_);
+    binary_size = j.value("len", 0);
     tracks_.clear();
 
     if (!j.contains("tracks") || !j["tracks"].is_array())
