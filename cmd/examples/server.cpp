@@ -14,6 +14,9 @@
 
 #include "signal_handler.h"
 
+std::shared_ptr<spdlog::logger> logger;
+
+
 using TrackNamespaceHash = uint64_t;
 using TrackNameHash = uint64_t;
 using FullTrackNameHash = uint64_t;
@@ -1139,6 +1142,11 @@ InitConfig(cxxopts::ParseResult& cli_opts)
         spdlog::default_logger()->set_level(spdlog::level::debug);
     }
 
+    if (cli_opts.count("trace") && cli_opts["trace"].as<bool>() == true) {
+        SPDLOG_INFO("setting trace level");
+        spdlog::default_logger()->set_level(spdlog::level::trace);
+    }
+
     if (cli_opts.count("version") && cli_opts["version"].as<bool>() == true) {
         SPDLOG_INFO("QuicR library version: {}", QUICR_VERSION);
         exit(0);
@@ -1168,12 +1176,17 @@ InitConfig(cxxopts::ParseResult& cli_opts)
 int
 main(int argc, char* argv[])
 {
+    // Initialize logger inside a function
+    logger = spdlog::stderr_color_mt("err_logger");
+    spdlog::set_default_logger(logger);
+
     int result_code = EXIT_SUCCESS;
 
     cxxopts::Options options("qclient",
                              std::string("MOQ Example Server using QuicR Version: ") + std::string(QUICR_VERSION));
     options.set_width(75).set_tab_expansion().allow_unrecognised_options().add_options()("h,help", "Print help")(
       "d,debug", "Enable debugging") // a bool parameter
+      ("t,trace", "Enable debugging") // a bool parameter
       ("v,version", "QuicR Version") // a bool parameter
       ("b,bind_ip", "Bind IP", cxxopts::value<std::string>()->default_value("127.0.0.1"))(
         "p,port", "Listening port", cxxopts::value<uint16_t>()->default_value("1234"))(

@@ -27,8 +27,11 @@
 #include <vector>
 
 #include "media.h"
+#include "subscriber_util.h"
 
 #include <optional>
+
+std::shared_ptr<spdlog::logger> logger;
 
 using json = nlohmann::json; // NOLINT
 
@@ -39,6 +42,8 @@ namespace qclient_vars {
     bool record = false;
     bool playback = false;
     bool new_group = false;
+    bool add_gaps = false;
+    bool req_track_status = false;
     std::chrono::milliseconds playback_speed_ms(20);
 }
 
@@ -251,18 +256,20 @@ namespace base64 {
  */
 class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
 {
-
     bool is_catalog_;
+    std::shared_ptr<SubscriberUtil> util_;
 
   public:
     MySubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
                             quicr::messages::FilterType filter_type,
                             const std::optional<JoiningFetch>& joining_fetch,
+                            std::shared_ptr<SubscriberUtil> util,
                             const bool catalog = false,
                             const std::filesystem::path& dir = qclient_consts::kMoqDataDir)
       : SubscribeTrackHandler(full_track_name, 3, quicr::messages::GroupOrder::kAscending, filter_type, joining_fetch)
     {
         is_catalog_ = catalog;
+        util_ = util;
 
         if (qclient_vars::record) {
             std::filesystem::create_directory(dir);
@@ -289,36 +296,69 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
         if (qclient_vars::record) {
             RecordObject(GetFullTrackName(), hdr, data);
         }
+        std::string s(reinterpret_cast<const char*>(GetFullTrackName().name.data()),
+                      GetFullTrackName().name.size());
+        SPDLOG_INFO("Received message on {0}: Group:{1}, Object:{2}", s, hdr.group_id, hdr.object_id);
 
         if (is_catalog_) {
-                // Parse catalog and print to stdout
-                try {
-                        std::string catalog_str(data.begin(), data.end());
-                        json j = json::parse(catalog_str);
-                        std::cerr << std::setw(2) << j << std::endl;
-                        Catalog catalog;
-                        catalog.from_json(catalog_str);
-
-                } catch (const std::exception& e) {
-                        SPDLOG_ERROR("Failed to parse catalog JSON: {0}", e.what());
-                        std::cerr << fmt::format("Failed to parse catalog JSON: {0}", e.what()) << std::endl;
+            // Parse catalog and print to stdout
+            try {
+                std::string catalog_str(data.begin(), data.end());
+                Catalog catalog;
+                catalog.from_json(catalog_str);
+                std::vector<uint8_t> init_data = base64::decode_to_uint8_vec(catalog.init_data_);
+                std::cout.write(reinterpret_cast<const char*>(init_data.data()), init_data.size());
+                for (const auto& track : catalog.tracks()) {
+                    auto s_track = std::make_shared<SubTrack>();
+                    s_track->track_entry = track;
+                    util_->sub_tracks.push_back(s_track);
                 }
-                return;
+                util_->catalog_read = true;
+                SPDLOG_INFO( "Catalog parsed with {0} tracks", catalog.tracks().size());
+
+
+            } catch (const std::exception& e) {
+                SPDLOG_ERROR("Failed to parse catalog JSON: {0}", e.what());
+                std::cerr << fmt::format("Failed to parse catalog JSON: {0}", e.what()) << std::endl;
+            }
+            return;
         }
 
-        // std::string msg(data.begin(), data.end());
-        // SPDLOG_INFO("Received message: Group:{0}, Object:{1} - {2}", hdr.group_id, hdr.object_id, msg);
-        std::cerr << fmt::format("Received message: Group:{0}, Object:{1}", hdr.group_id, hdr.object_id) << std::endl;
         // std::cout << msg;
-        fwrite(data.data(), data.size(), 1, stdout);
-        fflush(stdout);
+        std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
+        std::cout.flush();
 
-        //     std::cerr << "Subscriber fragment hex dump:\n";
-        //     for (size_t i = 0; i < std::min<size_t>(data.size(), 32); ++i) {
-        //         std::cerr << std::hex << std::setw(2) << std::setfill('0')
-        //                   << static_cast<int>(data[i]) << " ";
+
+
+        // std::stringstream ext;
+        //
+        // if (hdr.extensions) {
+        //     ext << "mutable hdrs: ";
+        //
+        //     for (const auto& [type, value] : hdr.extensions.value()) {
+        //         ext << std::hex << std::setfill('0') << std::setw(2) << type;
+        //         ext << " = " << std::dec << std::setw(0) << uint64_t(quicr::UintVar(value)) << " ";
         //     }
-        //     std::cerr << std::dec << "\n";
+        // }
+        //
+        // if (hdr.immutable_extensions) {
+        //     ext << "immutable hdrs: ";
+        //
+        //     for (const auto& [type, value] : hdr.immutable_extensions.value()) {
+        //         ext << std::hex << std::setfill('0') << std::setw(2) << type;
+        //         ext << " = " << std::dec << std::setw(0) << uint64_t(quicr::UintVar(value)) << " ";
+        //     }
+        // }
+        //
+        // std::string msg(data.begin(), data.end());
+        //
+        // SPDLOG_INFO("Received message: {} Group:{}, Object:{} - {}", ext.str(), hdr.group_id, hdr.object_id, msg);
+        //
+        // if (qclient_vars::new_group && not new_group_requested_) {
+        //     SPDLOG_INFO("Track alias: {} requesting new group", GetTrackAlias().value());
+        //     RequestNewGroup();
+        //     new_group_requested_ = true;
+        // }
     }
 
     void StatusChanged(Status status) override
@@ -326,14 +366,7 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
         switch (status) {
             case Status::kOk: {
                 if (auto track_alias = GetTrackAlias(); track_alias.has_value()) {
-                    //SPDLOG_ERROR("Track alias: {0} is ready to read", track_alias.value());
-                    std::cerr << "Track alias: " << track_alias.value() << " is ready to read" << std::endl;
-                    if (qclient_vars::new_group) {
-                        SPDLOG_ERROR("Track alias: {0} requesting new group", track_alias.value());
-                        std::cerr << "Track alias: " << track_alias.value() << " is requesting new group" << std::endl;
-                        RequestNewGroup();
-                    }
-                    //SPDLOG_ERROR("Track alias: {0} is ready to read", track_alias.value());
+                    SPDLOG_INFO("Track alias: {0} is ready to read", track_alias.value());
                 }
             } break;
 
@@ -470,7 +503,7 @@ class MyFetchTrackHandler : public quicr::FetchTrackHandler
     void ObjectReceived(const quicr::ObjectHeaders& headers, quicr::BytesSpan data) override
     {
         std::string msg(data.begin(), data.end());
-        SPDLOG_ERROR(
+        SPDLOG_INFO(
           "Received fetched object group_id: {} object_id: {} value: {}", headers.group_id, headers.object_id, msg);
     }
 
@@ -479,12 +512,12 @@ class MyFetchTrackHandler : public quicr::FetchTrackHandler
         switch (status) {
             case Status::kOk: {
                 if (auto track_alias = GetTrackAlias(); track_alias.has_value()) {
-                    SPDLOG_ERROR("Track alias: {0} is ready to read", track_alias.value());
+                    SPDLOG_INFO("Track alias: {0} is ready to read", track_alias.value());
                 }
             } break;
 
             case Status::kError: {
-                SPDLOG_ERROR("Fetch failed");
+                SPDLOG_INFO("Fetch failed");
                 break;
             }
             default:
@@ -499,29 +532,31 @@ class MyFetchTrackHandler : public quicr::FetchTrackHandler
  */
 class MyClient : public quicr::Client
 {
-  public:
     MyClient(const quicr::ClientConfig& cfg, bool& stop_threads)
       : quicr::Client(cfg)
       , stop_threads_(stop_threads)
     {
     }
 
+  public:
+    static std::shared_ptr<MyClient> Create(const quicr::ClientConfig& cfg, bool& stop_threads)
+    {
+        return std::shared_ptr<MyClient>(new MyClient(cfg, stop_threads));
+    }
+
     void StatusChanged(Status status) override
     {
         switch (status) {
             case Status::kReady:
-                //SPDLOG_ERROR("Connection ready");
-                std::cerr << "Connection ready" << std::endl;
+                SPDLOG_INFO("Connection ready");
                 break;
             case Status::kConnecting:
                 break;
             case Status::kPendingServerSetup:
-                //SPDLOG_ERROR("Connection connected and now pending server setup");
-                std::cerr << "Pending server setup" << std::endl;
+                SPDLOG_INFO("Connection connected and now pending server setup");
                 break;
             default:
-                //SPDLOG_ERROR("Connection failed {0}", static_cast<int>(status));
-                std::cerr << "Connection failed with status: " << static_cast<int>(status) << std::endl;
+                SPDLOG_INFO("Connection failed {0}", static_cast<int>(status));
                 stop_threads_ = true;
                 moq_example::terminate = true;
                 moq_example::termination_reason = "Connection failed";
@@ -534,22 +569,22 @@ class MyClient : public quicr::Client
                           const quicr::PublishAnnounceAttributes&) override
     {
         auto th = quicr::TrackHash({ track_namespace, {} });
-        SPDLOG_ERROR("Received announce for namespace_hash: {}", th.track_namespace_hash);
+        SPDLOG_INFO("Received announce for namespace_hash: {}", th.track_namespace_hash);
     }
 
     void UnannounceReceived(const quicr::TrackNamespace& track_namespace) override
     {
         auto th = quicr::TrackHash({ track_namespace, {} });
-        SPDLOG_ERROR("Received unannounce for namespace_hash: {}", th.track_namespace_hash);
+        SPDLOG_INFO("Received unannounce for namespace_hash: {}", th.track_namespace_hash);
     }
 
     void SubscribeAnnouncesStatusChanged(const quicr::TrackNamespace& track_namespace,
-                                         std::optional<quicr::messages::SubscribeAnnouncesErrorCode> error_code,
+                                         std::optional<quicr::messages::SubscribeNamespaceErrorCode> error_code,
                                          std::optional<quicr::messages::ReasonPhrase> reason) override
     {
         auto th = quicr::TrackHash({ track_namespace, {} });
         if (!error_code.has_value()) {
-            SPDLOG_ERROR("Subscribe announces namespace_hash: {} status changed to OK", th.track_namespace_hash);
+            SPDLOG_INFO("Subscribe announces namespace_hash: {} status changed to OK", th.track_namespace_hash);
             return;
         }
 
@@ -558,7 +593,7 @@ class MyClient : public quicr::Client
             reason_str.assign(reason.value().begin(), reason.value().end());
         }
 
-        SPDLOG_ERROR("Subscribe announces to namespace_hash: {} has error {} with reason: {}",
+        SPDLOG_WARN("Subscribe announces to namespace_hash: {} has error {} with reason: {}",
                     th.track_namespace_hash,
                     static_cast<uint64_t>(error_code.value()),
                     reason_str);
@@ -583,7 +618,8 @@ class MyClient : public quicr::Client
                                           .priority = attributes.priority,
                                           .ttl = 3000, // in milliseconds
                                           .track_mode = std::nullopt,
-                                          .extensions = std::nullopt };
+                                          .extensions = std::nullopt,
+                                          .immutable_extensions = std::nullopt };
 
             std::string hello = "Hello:" + std::to_string(pub_group_number);
             std::vector<uint8_t> data_vec(hello.begin(), hello.end());
@@ -594,6 +630,26 @@ class MyClient : public quicr::Client
         return true;
     }
 
+    void TrackStatusResponseReceived(quicr::ConnectionHandle,
+                                     uint64_t request_id,
+                                     const quicr::SubscribeResponse& response) override
+    {
+        switch (response.reason_code) {
+            case quicr::SubscribeResponse::ReasonCode::kOk:
+                SPDLOG_INFO("Request track status OK response request_id: {} largest group: {} object: {}",
+                            request_id,
+                            response.largest_location.has_value() ? response.largest_location->group : 0,
+                            response.largest_location.has_value() ? response.largest_location->object : 0);
+                break;
+            default:
+                SPDLOG_INFO("Request track status response ERROR request_id: {} error: {} reason: {}",
+                            request_id,
+                            static_cast<int>(response.reason_code),
+                            response.error_reason.has_value() ? response.error_reason.value() : "");
+                break;
+        }
+    }
+
   private:
     bool& stop_threads_;
 };
@@ -601,6 +657,7 @@ class MyClient : public quicr::Client
 struct TrackPublishData
 {
     int track_id{ -1 };
+    std::string track_type;
     std::shared_ptr<MyPublishTrackHandler> track_handler;
 
     uint64_t group_id{ 0 };
@@ -614,7 +671,7 @@ struct TrackPublishData
 
 quicr::PublishTrackHandler::PublishObjectStatus
 PublishCatalog(std::shared_ptr<TrackPublishData>& Catalog_TrackHandler_Data,
-            std::shared_ptr<SharedState> shared_state,
+            std::shared_ptr<PublisherSharedState> shared_state,
             bool& catalog_published)
 {
     switch (Catalog_TrackHandler_Data->track_handler->GetStatus()) {
@@ -641,7 +698,7 @@ PublishCatalog(std::shared_ptr<TrackPublishData>& Catalog_TrackHandler_Data,
             }
             [[fallthrough]];
         default:
-            SPDLOG_ERROR("Catalog publish status not ok: {0}", static_cast<int>(Catalog_TrackHandler_Data->track_handler->GetStatus()));
+            SPDLOG_WARN("Catalog publish status not ok: {0}", static_cast<int>(Catalog_TrackHandler_Data->track_handler->GetStatus()));
             return MyPublishTrackHandler::PublishObjectStatus::kInternalError;
     }
 
@@ -714,10 +771,11 @@ quicr::PublishTrackHandler::PublishObjectStatus
 PublishChunk(std::shared_ptr<TrackPublishData> & TrackHandler_Data,
              std::shared_ptr<MP4Chunk> chunk)
 {
-    // if (chunk->is_keyframe) {
-    //     TrackHeaderData.group_id++;
-    //     TrackHeaderData.object_id = 0;
-    // }
+    if (chunk->is_keyframe) { // TrackHandler_Data->track_type == "video" &&
+        TrackHandler_Data->group_id++;
+        TrackHandler_Data->object_id = 0;
+        TrackHandler_Data->subgroup_id = 0;
+    }
 
     switch (TrackHandler_Data->track_handler->GetStatus()) {
         case MyPublishTrackHandler::Status::kOk:
@@ -772,10 +830,10 @@ PublishChunk(std::shared_ptr<TrackPublishData> & TrackHandler_Data,
             throw std::runtime_error("PublishObject returned status=" + std::to_string(static_cast<int>(status)));
         } else if (status == decltype(status)::kOk) {
             SPDLOG_INFO("Published CHUNK, rval: {0}, track_idx: {1}, group id: {2}, obj. id: {3}",
-                        static_cast<int>(status),
-                        TrackHandler_Data->track_id,
-                        TrackHandler_Data->group_id,
-                        TrackHandler_Data->object_id++);
+                static_cast<int>(status),
+                TrackHandler_Data->track_id,
+                TrackHandler_Data->group_id,
+                TrackHandler_Data->object_id++);
         }
         return status;
     } catch (const std::exception& e) {
@@ -790,7 +848,7 @@ PublishChunk(std::shared_ptr<TrackPublishData> & TrackHandler_Data,
 /*===========================================================================*/
 
 void
-DoPublisher2(std::shared_ptr<SharedState> shared_state, const std::shared_ptr<quicr::Client>& client, bool use_announce, const bool& stop)
+DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state, const std::shared_ptr<quicr::Client>& client, bool use_announce, const bool& stop)
 {
     std::vector<std::shared_ptr<TrackPublishData>> tpd_list;
 
@@ -804,12 +862,15 @@ DoPublisher2(std::shared_ptr<SharedState> shared_state, const std::shared_ptr<qu
         auto th = std::make_shared<MyPublishTrackHandler>(
         full_track_name, quicr::TrackMode::kStream, 2, 3000);
         th->SetUseAnnounce(true); //TODO True vagy false mit tesz
-        //th->SetTrackAlias(std::hash<std::string>{}("catalog"));
+        th->SetTrackAlias(0);
 
         auto tpd = std::make_shared<TrackPublishData>();
         tpd->track_id = 0;
+        tpd->track_type = "catalog";
         tpd->track_handler = th;
         tpd_list.push_back(tpd);
+
+        client->PublishTrack(th);
     }
     for (auto track : shared_state->catalog.tracks()) {
 
@@ -818,12 +879,14 @@ DoPublisher2(std::shared_ptr<SharedState> shared_state, const std::shared_ptr<qu
         auto th = std::make_shared<MyPublishTrackHandler>(
             full_track_name, quicr::TrackMode::kStream, 2, 3000);
         th->SetUseAnnounce(false);
-        //th->SetTrackAlias(std::hash<std::string>{}(track.name));
+        th->SetTrackAlias(track.idx);
 
         auto tpd = std::make_shared<TrackPublishData>();
         tpd->track_id = track.idx;
+        tpd->track_type = track.type;
         tpd->track_handler = th;
         tpd_list.push_back(tpd);
+        client->PublishTrack(th);
     }
 
     auto get_catalog_handler_data = [&]() -> std::shared_ptr<TrackPublishData> {
@@ -837,25 +900,25 @@ DoPublisher2(std::shared_ptr<SharedState> shared_state, const std::shared_ptr<qu
 
     SPDLOG_INFO("Started publisher track");
 
-    bool published_tracks{ false };
+    //bool published_tracks{ false };
     bool catalog_published{ false };
 
     while (!stop) {
 
 
-        if ((!published_tracks) && (client->GetStatus() == MyClient::Status::kReady)) {
-            SPDLOG_INFO("Publish track");
-            for (auto track_publish_data : tpd_list) {
-                client->PublishTrack(track_publish_data->track_handler);
-            }
-            published_tracks = true;
-        }
+        // if ((!published_tracks) && (client->GetStatus() == MyClient::Status::kReady)) {
+        //     SPDLOG_INFO("Publish track");
+        //     for (auto track_publish_data : tpd_list) {
+        //         client->PublishTrack(track_publish_data->track_handler);
+        //     }
+        //     published_tracks = true;
+        // }
 
- if (!catalog_published) {
+    if (!catalog_published) {
             auto catalog_handler_data = get_catalog_handler_data();
             PublishCatalog(catalog_handler_data, shared_state, std::ref(catalog_published));
             if (!catalog_published) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::this_thread::yield();
                 SPDLOG_ERROR("Catalog not yet published, waiting...");
                 continue;
             }
@@ -863,20 +926,38 @@ DoPublisher2(std::shared_ptr<SharedState> shared_state, const std::shared_ptr<qu
         }
 
 
-        std::shared_ptr<MP4Chunk> chunk = shared_state->GetChunk(stop);
-
-        if (chunk->track_id == -1) {
-            SPDLOG_ERROR( "Track ID '-1', returning.");
-            continue;
-        }
-
-        for (auto tpd : tpd_list) {
-            if (tpd->track_id == chunk->track_id) {
-                PublishChunk(tpd, chunk);
-                break;
+        //std::shared_ptr<MP4Chunk> chunk = shared_state->GetChunk(stop);
+        if (auto ch = shared_state->GetChunk(stop)) {
+                      // (opcionális) pacing itt, ha kell
+            if (ch->track_id == -1) {
+                SPDLOG_ERROR( "Track ID '-1', returning.");
+                continue;
             }
+
+            for (auto tpd : tpd_list) {
+                if (tpd->track_id == ch->track_id) {
+                    PublishChunk(tpd, ch);
+                    break;
+                }
+            }
+        } else {
+                          // nincs adat most — adjunk CPU-t másnak
+            std::this_thread::yield();
         }
-        chunk.reset(); // Reset the chunk after publishing
+
+        // if (chunk->track_id == -1) {
+        //     SPDLOG_ERROR( "Track ID '-1', returning.");
+        //     continue;
+        // }
+        //
+        // for (auto tpd : tpd_list) {
+        //     if (tpd->track_id == chunk->track_id) {
+        //         PublishChunk(tpd, chunk);
+        //         break;
+        //     }
+        // }
+        // //std::this_thread::sleep_for(std::chrono::milliseconds(15c));
+        // chunk.reset(); // Reset the chunk after publishing
     }
 
     for (auto track_publish_data : tpd_list) {
@@ -888,7 +969,7 @@ DoPublisher2(std::shared_ptr<SharedState> shared_state, const std::shared_ptr<qu
 }
 
 /*===========================================================================*/
-// Original Publisher Thread to perform publishing
+// Publisher Thread to perform publishing
 /*===========================================================================*/
 
 void
@@ -939,6 +1020,7 @@ DoPublisher(const quicr::FullTrackName& full_track_name,
                 .ttl = std::nullopt,
                 .track_mode = std::nullopt,
                 .extensions = std::nullopt,
+                .immutable_extensions = std::nullopt,
             };
 
             std::size_t data_offset = moq_j["dataOffset"];
@@ -1028,6 +1110,14 @@ DoPublisher(const quicr::FullTrackName& full_track_name,
             group_id++;
         }
 
+        if (qclient_vars::add_gaps && group_id && group_id % 4 == 0) {
+            group_id += 1;
+        }
+
+        if (qclient_vars::add_gaps && object_id && object_id % 8 == 0) {
+            object_id += 2;
+        }
+
         std::string msg;
         if (qclient_vars::publish_clock) {
             std::this_thread::sleep_for(std::chrono::milliseconds(999));
@@ -1039,20 +1129,23 @@ DoPublisher(const quicr::FullTrackName& full_track_name,
         }
 
         quicr::ObjectHeaders obj_headers = {
-            group_id,       object_id++,    subgroup_id,  msg.size(),  quicr::ObjectStatus::kAvailable,
-            2 /*priority*/, 3000 /* ttl */, std::nullopt, std::nullopt
+            group_id,       object_id++,    subgroup_id,  msg.size(),   quicr::ObjectStatus::kAvailable,
+            2 /*priority*/, 3000 /* ttl */, std::nullopt, std::nullopt, std::nullopt
         };
 
         try {
-            auto status =
-              track_handler->PublishObject(obj_headers, { reinterpret_cast<uint8_t*>(msg.data()), msg.size() });
+            if (track_handler->CanPublish()) {
+                auto status =
+                  track_handler->PublishObject(obj_headers, { reinterpret_cast<uint8_t*>(msg.data()), msg.size() });
 
-            if (status == decltype(status)::kPaused) {
-                SPDLOG_INFO("Publish is paused");
-            } else if (status == decltype(status)::kNoSubscribers) {
-                SPDLOG_INFO("Publish has no subscribers");
-            } else if (status != decltype(status)::kOk) {
-                throw std::runtime_error("PublishObject returned status=" + std::to_string(static_cast<int>(status)));
+                if (status == decltype(status)::kPaused) {
+                    SPDLOG_INFO("Publish is paused");
+                } else if (status == decltype(status)::kNoSubscribers) {
+                    SPDLOG_INFO("Publish has no subscribers");
+                } else if (status != decltype(status)::kOk) {
+                    throw std::runtime_error("PublishObject returned status=" +
+                                             std::to_string(static_cast<int>(status)));
+                }
             }
         } catch (const std::exception& e) {
             SPDLOG_ERROR("Caught exception trying to publish. (error={})", e.what());
@@ -1066,51 +1159,85 @@ DoPublisher(const quicr::FullTrackName& full_track_name,
     moq_example::terminate = true;
 }
 
+struct SubTrackHandlerStruct
+{
+    std::shared_ptr<MySubscribeTrackHandler> track_handler;
+    SubTrack& trackDetails;
+};
+
 /*===========================================================================*/
 // Subscriber thread to perform subscribe
 /*===========================================================================*/
 
 void
-DoSubscriber(const quicr::FullTrackName& full_track_name,
+DoSubscriber(const std::string& track_namespace,
              const std::shared_ptr<quicr::Client>& client,
              quicr::messages::FilterType filter_type,
              const bool& stop,
-             bool join_fetch)
+             const std::optional<std::uint64_t> join_fetch,
+             const bool absolute)
 {
     typedef quicr::SubscribeTrackHandler::JoiningFetch Fetch;
-    const auto joining_fetch =
-      join_fetch ? Fetch{ 4, quicr::messages::GroupOrder::kAscending, {}, 0 } : std::optional<Fetch>(std::nullopt);
+    const auto joining_fetch = join_fetch.has_value()
+                                 ? Fetch{ 4, quicr::messages::GroupOrder::kAscending, {}, *join_fetch, absolute }
+                                : std::optional<Fetch>(std::nullopt);
 
-    bool catalog = false;
+    std::vector<SubTrackHandlerStruct> sub_track_handlers;
 
     quicr::FullTrackName catalog_name = quicr::example::MakeFullTrackName("bbb", "catalog");
 
-    if (catalog_name.name_space == full_track_name.name_space && catalog_name.name == full_track_name.name) {
-        catalog = true;
-    }
-    const auto track_handler = std::make_shared<MySubscribeTrackHandler>(full_track_name, filter_type, joining_fetch, catalog);
+    auto sub_util = std::make_shared<SubscriberUtil>();
 
-    //SPDLOG_ERROR("Started subscriber");
-    std::cerr << "Started subscriber" << std::endl;
+    auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace, "catalog");
+
+    const auto catalog_track_handler = std::make_shared<MySubscribeTrackHandler>(catalog_full_track_name, filter_type, joining_fetch, sub_util, true);
+
+    SPDLOG_INFO("Started subscriber");
 
     bool subscribe_track{ false };
 
     while (not stop) {
         if ((!subscribe_track) && (client->GetStatus() == MyClient::Status::kReady)) {
-            SPDLOG_INFO("Subscribing to track");
-            client->SubscribeTrack(track_handler);
+            std::cerr << "Subscribing to catalog track" << std::endl;
+            client->SubscribeTrack(catalog_track_handler);
             subscribe_track = true;
+        }
+
+        while (sub_util->catalog_read == false) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            SPDLOG_INFO("Waiting for catalog to be ready");
+            if (moq_example::terminate) {
+                break;
+            }
+        }
+        if (moq_example::terminate) {
+            continue;
+        }
+        if (sub_util->subscribed == false) {
+            SPDLOG_INFO("Subscribing to tracks based on ready catalog");
+            for (auto track  : sub_util->sub_tracks) {
+                track->namespace_ = track_namespace;
+                auto track_full_name = quicr::example::MakeFullTrackName(track_namespace, track->track_entry.name);
+                auto track_handler = std::make_shared<MySubscribeTrackHandler>(track_full_name, filter_type, joining_fetch, std::ref(sub_util), false);
+                client->SubscribeTrack(track_handler);
+                SubTrackHandlerStruct track_handler_struct{track_handler, *track};
+                sub_track_handlers.push_back(track_handler_struct);
+                SPDLOG_INFO("Subscribed track name: {0}", track->track_entry.name);
+            }
+            sub_util->subscribed = true;
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
-    client->UnsubscribeTrack(track_handler);
+    client->UnsubscribeTrack(catalog_track_handler);
+    for (auto [track_handler, trackDetails] : sub_track_handlers) {
+        client->UnsubscribeTrack(track_handler);
+    }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    //SPDLOG_ERROR("Subscriber done track");
-    std::cerr << "Subscriber done track" << std::endl;
+    SPDLOG_INFO("Subscriber done track");
     moq_example::terminate = true;
 }
 
@@ -1179,12 +1306,17 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
     }
 
     if (cli_opts.count("debug") && cli_opts["debug"].as<bool>() == true) {
-        SPDLOG_ERROR("setting debug level");
+        SPDLOG_INFO("setting debug level");
         spdlog::set_level(spdlog::level::debug);
     }
 
+    if (cli_opts.count("trace") && cli_opts["trace"].as<bool>() == true) {
+        SPDLOG_INFO("setting trace level");
+        spdlog::set_level(spdlog::level::trace);
+    }
+
     if (cli_opts.count("version") && cli_opts["version"].as<bool>() == true) {
-        SPDLOG_ERROR("QuicR library version: {}", QUICR_VERSION);
+        SPDLOG_INFO("QuicR library version: {}", QUICR_VERSION);
         exit(0);
     }
 
@@ -1213,17 +1345,14 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
 
     if (cli_opts.count("sub_namespace") && cli_opts.count("sub_name")) {
         enable_sub = true;
-        //SPDLOG_ERROR("Subscriber enabled using track namespace: {0} name: {1}",
-        //            cli_opts["sub_namespace"].as<std::string>(),
-        //            cli_opts["sub_name"].as<std::string>());
-        std::cerr << "Subscriber enabled using track namespace: "
-                  << cli_opts["sub_namespace"].as<std::string>()
-                  << " name: " << cli_opts["sub_name"].as<std::string>() << std::endl;
+        SPDLOG_INFO("Subscriber enabled using track namespace: {0} name: {1}",
+                    cli_opts["sub_namespace"].as<std::string>(),
+                    cli_opts["sub_name"].as<std::string>());
     }
 
     if (cli_opts.count("fetch_namespace") && cli_opts.count("fetch_name")) {
         enable_fetch = true;
-        SPDLOG_ERROR("Subscriber enabled using track namespace: {0} name: {1}",
+        SPDLOG_INFO("Subscriber enabled using track namespace: {0} name: {1}",
                     cli_opts["fetch_namespace"].as<std::string>(),
                     cli_opts["fetch_name"].as<std::string>());
     }
@@ -1240,8 +1369,17 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
         qclient_vars::playback = true;
     }
 
+    if (cli_opts.count("gaps") && cli_opts["gaps"].as<bool>() == true) {
+        SPDLOG_INFO("Adding gaps to group and objects");
+        qclient_vars::add_gaps = true;
+    }
+
     if (cli_opts.count("new_group")) {
         qclient_vars::new_group = true;
+    }
+
+    if (cli_opts.count("track_status")) {
+        qclient_vars::req_track_status = true;
     }
 
     if (cli_opts.count("playback_speed_ms")) {
@@ -1249,8 +1387,7 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
     }
 
     if (cli_opts.count("ssl_keylog") && cli_opts["ssl_keylog"].as<bool>() == true) {
-        //SPDLOG_ERROR("SSL Keylog enabled");
-        std::cerr << "SSL Keylog enabled" << std::endl;
+        SPDLOG_INFO("SSL Keylog enabled");
     }
 
     config.endpoint_id = cli_opts["endpoint_id"].as<std::string>();
@@ -1270,6 +1407,10 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
 int
 main(int argc, char* argv[])
 {
+    // Initialize logger inside a function
+    logger = spdlog::stderr_color_mt("err_logger");
+    spdlog::set_default_logger(logger);
+
     int result_code = EXIT_SUCCESS;
 
     cxxopts::Options options("qclient",
@@ -1282,6 +1423,7 @@ main(int argc, char* argv[])
       .add_options()
         ("h,help", "Print help")
         ("d,debug", "Enable debugging") // a bool parameter
+        ("t,trace", "Enable tracing") // a bool parameter
         ("v,version", "QuicR Version")                                        // a bool parameter
         ("r,url", "Relay URL", cxxopts::value<std::string>()->default_value("moq://localhost:1234"))
         ("e,endpoint_id", "This client endpoint ID", cxxopts::value<std::string>()->default_value("moq-client"))
@@ -1296,7 +1438,8 @@ main(int argc, char* argv[])
         ("clock", "Publish clock timestamp every second instead of using STDIN chat")
         ("playback", "Playback recorded data from moq and dat files", cxxopts::value<bool>())
         ("playback_speed_ms", "Playback speed in ms", cxxopts::value<std::uint64_t>())
-        ("video", "Input MP4 video file (for publisher mode)");
+        ("video", "Input MP4 video file (for publisher mode)")
+        ("gaps", "Add gaps to groups and objects");
 
     options.add_options("Subscriber")
         ("sub_namespace", "Track namespace", cxxopts::value<std::string>())
@@ -1305,7 +1448,9 @@ main(int argc, char* argv[])
         ("sub_announces", "Prefix namespace to subscribe announces to", cxxopts::value<std::string>())
         ("record", "Record incoming data to moq and dat files", cxxopts::value<bool>())
         ("new_group", "Request new group on subscribe", cxxopts::value<bool>())
-        ("joining_fetch", "Subscribe with a joining fetch", cxxopts::value<bool>());
+        ("joining_fetch", "Subscribe with a joining fetch using this joining start", cxxopts::value<std::uint64_t>())
+        ("absolute", "Joining fetch will be absolute not relative", cxxopts::value<bool>())
+        ("track_status", "Request track status using sub_namespace and sub_name options", cxxopts::value<bool>());
 
     options.add_options("Fetcher")
         ("fetch_namespace", "Track namespace", cxxopts::value<std::string>())
@@ -1338,7 +1483,7 @@ main(int argc, char* argv[])
 
     try {
         bool stop_threads{ false };
-        auto client = std::make_shared<MyClient>(config, stop_threads);
+        auto client = MyClient::Create(config, stop_threads);
 
         if (client->Connect() != quicr::Transport::Status::kConnecting) {
             SPDLOG_ERROR("Failed to connect to server due to invalid params, check URI");
@@ -1347,8 +1492,7 @@ main(int argc, char* argv[])
 
         while (not stop_threads) {
             if (client->GetStatus() == MyClient::Status::kReady) {
-                //SPDLOG_ERROR("Connected to server");
-                std::cerr << "Connected to server" << std::endl;
+                SPDLOG_INFO("Connected to server");
                 break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -1364,7 +1508,7 @@ main(int argc, char* argv[])
 
             auto th = quicr::TrackHash(prefix_ns);
 
-            SPDLOG_ERROR("Sending subscribe announces for prefix '{}' namespace_hash: {}",
+            SPDLOG_INFO("Sending subscribe announces for prefix '{}' namespace_hash: {}",
                          result["sub_announces"].as<std::string>(),
                          th.track_namespace_hash);
 
@@ -1378,7 +1522,7 @@ main(int argc, char* argv[])
 
                 pub_thread = std::thread(DoPublisher, pub_track_name, client, use_announce, std::ref(stop_threads));
             } else {
-                auto shared_state = std::make_shared<SharedState>();
+                auto shared_state = std::make_shared<PublisherSharedState>();
 
                 bool stop_parse{ false };
 
@@ -1401,16 +1545,24 @@ main(int argc, char* argv[])
             if (result.count("start_point")) {
                 if (result["start_point"].as<uint64_t>() == 0) {
                     filter_type = quicr::messages::FilterType::kNextGroupStart;
-                    SPDLOG_ERROR("Setting subscription filter to Next Group Start");
+                    SPDLOG_INFO("Setting subscription filter to Next Group Start");
                 }
             }
-            bool joining_fetch = result.count("joining_fetch") && result["joining_fetch"].as<bool>();
+            std::optional<std::uint64_t> joining_fetch;
+            if (result.count("joining_fetch")) {
+                joining_fetch = result["joining_fetch"].as<uint64_t>();
+            }
+            bool absolute = result.count("absolute") && result["absolute"].as<bool>();
 
             const auto& sub_track_name = quicr::example::MakeFullTrackName(result["sub_namespace"].as<std::string>(),
                                                                            result["sub_name"].as<std::string>());
 
-            sub_thread =
-              std::thread(DoSubscriber, sub_track_name, client, filter_type, std::ref(stop_threads), joining_fetch);
+            if (qclient_vars::req_track_status) {
+                client->RequestTrackStatus(sub_track_name);
+            }
+
+            sub_thread = std::thread(
+              DoSubscriber, result["sub_namespace"].as<std::string>(), client, filter_type, std::ref(stop_threads), joining_fetch, absolute);
         }
         if (enable_fetch) {
             const auto& fetch_track_name = quicr::example::MakeFullTrackName(
@@ -1429,8 +1581,7 @@ main(int argc, char* argv[])
         moq_example::cv.wait(lock, [&]() { return moq_example::terminate; });
 
         stop_threads = true;
-        //SPDLOG_ERROR("Stopping threads...");
-        std::cerr << "Stopping threads..." << std::endl;
+        SPDLOG_ERROR("Stopping threads...");
         if (parse_thread.joinable()) {
             parse_thread.join();
         }
@@ -1449,8 +1600,7 @@ main(int argc, char* argv[])
 
         client->Disconnect();
 
-        //SPDLOG_ERROR("Client done");
-        std::cerr << "Client done" << std::endl;
+        SPDLOG_ERROR("Client done");
         std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 
     } catch (const std::invalid_argument& e) {
@@ -1464,8 +1614,7 @@ main(int argc, char* argv[])
         result_code = EXIT_FAILURE;
     }
 
-    //SPDLOG_ERROR("Exit");
-    std::cerr << "Exiting..." << std::endl;
+    SPDLOG_INFO("Exit");
 
     return result_code;
 }
