@@ -270,7 +270,7 @@ struct std::hash<quicr::FullTrackName>
     {
         std::uint64_t h = 0;
         quicr::hash_combine(h, std::hash<quicr::TrackNamespace>{}(ftn.name_space));
-        quicr::hash_combine(h, std::hash<std::span<const std::uint8_t>>{}(ftn.name));
+        quicr::hash_combine(h, quicr::hash(ftn.name));
 
         // TODO(tievens): Evaluate; change hash to be more than 62 bits to avoid collisions
         return (h << 2) >> 2;
