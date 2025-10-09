@@ -327,96 +327,200 @@ void CMafParser::ProcessFragments(const std::vector<MP4Atom>& atoms) const
     }
 }
 
-// Check if a fragment contains a keyframe
+// Return true iff the moof contains at least one video keyframe sample.
 bool CMafParser::HasKeyframe(const MP4Atom& moof) {
-    if (moof.type != "moof" || moof.data.size() < 32) {
-        return false;
-    }
+    if (moof.type != "moof" || moof.data.size() < 16) return false;
 
-    constexpr uint32_t IS_NON_SYNC_SAMPLE = 0x10000;
-    constexpr uint32_t DEPENDS_YES = 0x20000;
+    auto rd32 = [&](size_t p) -> uint32_t {
+        if (p + 4 > moof.data.size()) return 0;
+        return (uint32_t(moof.data[p]) << 24) |
+               (uint32_t(moof.data[p+1]) << 16) |
+               (uint32_t(moof.data[p+2]) << 8) |
+               (uint32_t(moof.data[p+3]));
+    };
 
-    size_t offset = 8; // Skip moof header
-    while (offset + 8 <= moof.data.size()) {
-        uint32_t box_size = (moof.data[offset] << 24) | (moof.data[offset + 1] << 16) |
-                            (moof.data[offset + 2] << 8) | moof.data[offset + 3];
-        std::string box_type(reinterpret_cast<const char*>(&moof.data[offset + 4]), 4);
+    auto rd16 = [&](size_t p) -> uint16_t {
+        if (p + 2 > moof.data.size()) return 0;
+        return (uint16_t(moof.data[p]) << 8) | uint16_t(moof.data[p+1]);
+    };
+
+    // Bit helpers for sample_flags (ISO/IEC 14496-12:2015 8.8.3)
+    auto sample_is_sync = [&](uint32_t f) -> bool {
+        // layout:
+        // [31:28] reserved
+        // [27:26] is_leading
+        // [25:24] sample_depends_on
+        // [23:22] sample_is_depended_on
+        // [21:20] sample_has_redundancy
+        // [19:17] sample_padding_value
+        // [16]    sample_is_non_sync_sample
+        // [15:0]  sample_degradation_priority
+        const uint32_t sample_depends_on = (f >> 24) & 0x3;
+        const bool is_non_sync = ((f >> 16) & 0x1) != 0;
+
+        // A mintát akkor tekintjük kulcsképnek, ha NEM non-sync,
+        // és (videó esetén) deklaráltan nem függ másoktól (I-kép).
+        // (A szabvány szerint a non-sync bit == 0 már elég a "sync" megállapításhoz,
+        // de a gyakorlatban érdemes a depends_on==2-t is megkövetelni.)
+        if (is_non_sync) return false;
+        return (sample_depends_on == 2);
+    };
+
+    size_t off = 8; // moof header után
+    while (off + 8 <= moof.data.size()) {
+        uint32_t box_size = rd32(off);
+        std::string box_type(reinterpret_cast<const char*>(&moof.data[off + 4]), 4);
+        if (box_size < 8) break;
 
         if (box_type == "traf") {
-            size_t traf_offset = offset + 8;
-            while (traf_offset + 8 <= moof.data.size()) {
-                uint32_t inner_size = (moof.data[traf_offset] << 24) | (moof.data[traf_offset + 1] << 16) |
-                                      (moof.data[traf_offset + 2] << 8) | moof.data[traf_offset + 3];
-                std::string inner_type(reinterpret_cast<const char*>(&moof.data[traf_offset + 4]), 4);
+            // Keressük a tfhd-t (default_sample_flags-ért) és a trun-okat.
+            uint32_t tfhd_flags = 0;
+            uint32_t tfhd_default_sample_flags = 0;
+            bool tfhd_has_default_flags = false;
 
-                if (inner_type == "trun" && traf_offset + 16 <= moof.data.size()) {
-                    size_t pos = traf_offset + 8;
-                    uint8_t version = moof.data[pos];
-                    uint32_t trun_flags = (moof.data[pos] << 24) |
-                                          (moof.data[pos + 1] << 16) |
-                                          (moof.data[pos + 2] << 8) |
-                                          moof.data[pos + 3];
-                    uint32_t sample_count = (moof.data[pos + 4] << 24) |
-                                            (moof.data[pos + 5] << 16) |
-                                            (moof.data[pos + 6] << 8) |
-                                            moof.data[pos + 7];
-                    pos += 8;
+            // Első kör: tfhd kiolvasása (ha van)
+            {
+                size_t tOff = off + 8;
+                size_t trafEnd = off + box_size;
+                while (tOff + 8 <= trafEnd) {
+                    uint32_t isz = rd32(tOff);
+                    if (isz < 8) break;
+                    std::string itype(reinterpret_cast<const char*>(&moof.data[tOff + 4]), 4);
+                    if (itype == "tfhd") {
+                        // FullBox: version(1) + flags(3)
+                        size_t p = tOff + 8;
+                        if (p + 4 > moof.data.size()) break;
+                        uint8_t version = moof.data[p];
+                        (void)version;
+                        tfhd_flags = (uint32_t(moof.data[p+1]) << 16) |
+                                     (uint32_t(moof.data[p+2]) << 8) |
+                                      uint32_t(moof.data[p+3]);
+                        p += 4;
+
+                        // kötelező: track_ID
+                        p += 4;
+
+                        // opcionális mezők a tfhd_flags szerint (8.8.7)
+                        if (tfhd_flags & 0x000001) p += 8;             // base_data_offset
+                        if (tfhd_flags & 0x000002) p += 4;             // sample_description_index
+                        if (tfhd_flags & 0x000008) p += 4;             // default_sample_duration
+                        if (tfhd_flags & 0x000010) p += 4;             // default_sample_size
+                        if (tfhd_flags & 0x000020) {                   // default_sample_flags
+                            tfhd_default_sample_flags = rd32(p);
+                            tfhd_has_default_flags = true;
+                            p += 4;
+                        }
+                        break; // tfhd-et megtaláltuk (ha volt)
+                    }
+                    if (isz == 0) break;
+                    tOff += isz;
+                }
+            }
+
+            // Második kör: trun-ok feldolgozása
+            size_t tOff = off + 8;
+            size_t trafEnd = off + box_size;
+            while (tOff + 8 <= trafEnd) {
+                uint32_t isz = rd32(tOff);
+                if (isz < 8) break;
+                std::string itype(reinterpret_cast<const char*>(&moof.data[tOff + 4]), 4);
+
+                if (itype == "trun") {
+                    size_t p = tOff + 8;
+                    if (p + 4 > moof.data.size()) break;
+                    uint8_t version = moof.data[p];
+                    (void)version;
+                    // !!! HELYES: 24 bites flags a version UTÁNI 3 bájtból !!!
+                    uint32_t trun_flags = (uint32_t(moof.data[p+1]) << 16) |
+                                          (uint32_t(moof.data[p+2]) << 8)  |
+                                           uint32_t(moof.data[p+3]);
+                    p += 4;
+
+                    uint32_t sample_count = rd32(p); p += 4;
+
+                    // opcionális mezők a trun_flags szerint (8.8.8)
+                    int32_t data_offset_present = (trun_flags & 0x000001);
+                    int32_t first_sample_flags_present = (trun_flags & 0x000004);
+                    bool has_sample_duration = (trun_flags & 0x000100) != 0;
+                    bool has_sample_size     = (trun_flags & 0x000200) != 0;
+                    bool has_sample_flags    = (trun_flags & 0x000400) != 0;
+                    bool has_sample_cto      = (trun_flags & 0x000800) != 0;
+
+                    if (data_offset_present) p += 4;
 
                     uint32_t first_sample_flags = 0;
-                    if (trun_flags & 0x000001) { // data-offset-present
-                        pos += 4;
+                    if (first_sample_flags_present) {
+                        first_sample_flags = rd32(p);
+                        p += 4;
+                        // A szabvány kimondja: ha first-sample-flags-present, akkor sample-flags nem lehet jelen.
+                        // (Vannak fájlok, ahol ettől függetlenül jelen van, de akkor is az első mintára az FSL a mérvadó.)
+                        if (has_sample_flags) {
+                            // Spec szerint tiltott, de hagyjuk meg a has_sample_flags-et a >0. mintákra.
+                        }
                     }
-                    if (trun_flags & 0x000004) { // first-sample-flags-present
-                        first_sample_flags = (moof.data[pos] << 24) |
-                                             (moof.data[pos + 1] << 16) |
-                                             (moof.data[pos + 2] << 8) |
-                                             moof.data[pos + 3];
-                        pos += 4;
-                    }
-
-                    bool has_sample_duration = trun_flags & 0x000100;
-                    bool has_sample_size     = trun_flags & 0x000200;
-                    bool has_sample_flags    = trun_flags & 0x000400;
-                    bool has_sample_cto      = trun_flags & 0x000800;
 
                     for (uint32_t i = 0; i < sample_count; ++i) {
-                        uint32_t sample_flags = (i == 0 && (trun_flags & 0x000004)) ? first_sample_flags : 0;
-                        size_t sample_pos = pos;
-                        if (has_sample_duration) sample_pos += 4;
-                        if (has_sample_size)     sample_pos += 4;
-                        if (has_sample_flags) {
-                            if (sample_pos + 4 > moof.data.size()) break;
-                            sample_flags = (moof.data[sample_pos] << 24) |
-                                           (moof.data[sample_pos + 1] << 16) |
-                                           (moof.data[sample_pos + 2] << 8) |
-                                           moof.data[sample_pos + 3];
-                            sample_pos += 4;
-                        }
-                        if (has_sample_cto) sample_pos += 4;
+                        // A minta rekord kezdete
+                        size_t rec = p;
 
-                        // For video: keyframe if neither IS_NON_SYNC_SAMPLE nor DEPENDS_YES is set
-                        if ((sample_flags & (IS_NON_SYNC_SAMPLE | DEPENDS_YES)) == 0) {
+                        // Minta flags forrásának kiválasztása prioritás szerint:
+                        // 1) explicit sample_flags (ha van és i>0 vagy nincs FSL)
+                        // 2) first_sample_flags (csak i==0 és van FSL)
+                        // 3) tfhd.default_sample_flags (ha tfhd deklarálta)
+                        // 4) (opcionálisan trex.default_sample_flags – ha lenne itt elérhető)
+                        uint32_t flags_for_sample = 0;
+                        bool got_flags = false;
+
+                        // léptesd végig, de csak olvasd ki, amit kell
+                        if (has_sample_duration) rec += 4;
+                        if (has_sample_size)     rec += 4;
+
+                        if (has_sample_flags) {
+                            if (rec + 4 > moof.data.size()) break;
+                            flags_for_sample = rd32(rec);
+                            rec += 4;
+                            got_flags = true;
+                        } else if (i == 0 && first_sample_flags_present) {
+                            flags_for_sample = first_sample_flags;
+                            got_flags = true;
+                        } else if (tfhd_has_default_flags) {
+                            flags_for_sample = tfhd_default_sample_flags;
+                            got_flags = true;
+                        } else {
+                            // Ha semmi sincs megadva, a szabvány szerint a default a moov/mvex 'trex.default_sample_flags' lenne.
+                            // Itt nem áll rendelkezésre; ha szeretnéd, add át a függvénynek kívülről.
+                        }
+
+                        if (has_sample_cto) {
+                            // version==0: unsigned; version==1: signed – itt ellenőrizni elég a hossz.
+                            rec += 4;
+                        }
+
+                        // Ha megvannak a flag-ek, ellenőrizzük a kulcsképet.
+                        if (got_flags && sample_is_sync(flags_for_sample)) {
                             return true;
                         }
 
-                        // Advance to next sample
-                        pos += (has_sample_duration ? 4 : 0) +
-                               (has_sample_size ? 4 : 0) +
-                               (has_sample_flags ? 4 : 0) +
-                               (has_sample_cto ? 4 : 0);
+                        // Következő rekordra lépés:
+                        p += (has_sample_duration ? 4 : 0) +
+                             (has_sample_size     ? 4 : 0) +
+                             (has_sample_flags    ? 4 : 0) +
+                             (has_sample_cto      ? 4 : 0);
                     }
                 }
 
-                if (inner_size == 0) break;
-                traf_offset += inner_size;
+                if (isz == 0) break;
+                tOff += isz;
             }
         }
 
         if (box_size == 0) break;
-        offset += box_size;
+        off += box_size;
     }
+
     return false;
 }
+
 
 
 void DoParse(const std::shared_ptr<PublisherSharedState>& shared_state,const bool& stop)
@@ -530,6 +634,7 @@ void DoParse(const std::shared_ptr<PublisherSharedState>& shared_state,const boo
                 if (is4(h.type,"ftyp")) {
                     if (!full_avail(buf, head, h)) break;
                     parser.ParseBuffer(&buf[head], h.size);
+                    SPDLOG_INFO("STREAM: forwarded {} (size={})", h.type, h.size);
 
                     head += static_cast<size_t>(h.size);
                     progressed = true;
@@ -563,6 +668,14 @@ void DoParse(const std::shared_ptr<PublisherSharedState>& shared_state,const boo
                 continue;
             }
             else { // STREAM phase: interleaved moof/mdat támogatás
+                // ha később érkezik moov/ftyp/styp, küldjük be a parsernek (catalog létrehozása/frissítése)
+                if (is4(h.type,"moov") || is4(h.type,"ftyp") || is4(h.type,"styp")) {
+                    if (!full_avail(buf, head, h)) break;
+                    parser.ParseBuffer(&buf[head], h.size);
+                    head += static_cast<size_t>(h.size);
+                    progressed = true;
+                    continue;
+                }
                 // moof: toljuk a veremre
                 if (is4(h.type,"moof")) {
                     if (!full_avail(buf, head, h)) break;
