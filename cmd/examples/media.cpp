@@ -313,7 +313,7 @@ void CMafParser::ProcessFragments(const std::vector<MP4Atom>& atoms) const
             chunk_ptr->moof = last_moof;
             chunk_ptr->mdat = atoms[i];
             chunk_ptr->track_id = track_id;
-            chunk_ptr->is_keyframe = HasKeyframe(last_moof);
+            chunk_ptr->has_keyframe = HasKeyframe(last_moof);
 
             //std::cout << "Fragment for track ID: " << track_id
             //    << ", size: " << chunk_ptr->mdat.data.size()
