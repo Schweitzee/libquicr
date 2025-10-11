@@ -25,6 +25,9 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <unordered_map>
+
+#include <termios.h>
 
 #include "media.h"
 #include "subscriber_util.h"
@@ -771,7 +774,7 @@ quicr::PublishTrackHandler::PublishObjectStatus
 PublishChunk(std::shared_ptr<TrackPublishData> & TrackHandler_Data,
              std::shared_ptr<MP4Chunk> chunk)
 {
-    if (chunk->is_keyframe) { // TrackHandler_Data->track_type == "video" &&
+    if (chunk->has_keyframe) { // TrackHandler_Data->track_type == "video" &&
         TrackHandler_Data->group_id++;
         TrackHandler_Data->object_id = 0;
         TrackHandler_Data->subgroup_id = 0;
@@ -1165,6 +1168,34 @@ struct SubTrackHandlerStruct
     SubTrack& trackDetails;
 };
 
+// ---- Video track toggle helpers ----
+struct VideoToggleContext {
+    std::vector<std::string> video_names; // pl. {"video1", "video2"}
+    std::unordered_map<std::string, std::shared_ptr<MySubscribeTrackHandler>> handler_by_name;
+    int active_idx = -1; // melyik video aktív
+};
+
+static bool StartsWith(const std::string& s, const std::string& pref) {
+    return s.size() >= pref.size() && std::equal(pref.begin(), pref.end(), s.begin());
+}
+static bool IsVideoTrackName(const std::string& name) {
+    // nálad: "video1", "video2", ... vs "sound3" stb.
+    return StartsWith(name, "video");
+}
+
+// /dev/tty raw mód be/ki (nem a stdin!)
+static termios SetRawInputFD(int fd) {
+    termios oldt;
+    if (tcgetattr(fd, &oldt) != 0) return oldt;
+    termios newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(fd, TCSANOW, &newt);
+    int oldfl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, oldfl | O_NONBLOCK);
+    return oldt;
+}
+
+
 /*===========================================================================*/
 // Subscriber thread to perform subscribe
 /*===========================================================================*/
@@ -1177,69 +1208,216 @@ DoSubscriber(const std::string& track_namespace,
              const std::optional<std::uint64_t> join_fetch,
              const bool absolute)
 {
-    typedef quicr::SubscribeTrackHandler::JoiningFetch Fetch;
+    using Fetch = quicr::SubscribeTrackHandler::JoiningFetch;
     const auto joining_fetch = join_fetch.has_value()
-                                 ? Fetch{ 4, quicr::messages::GroupOrder::kAscending, {}, *join_fetch, absolute }
-                                : std::optional<Fetch>(std::nullopt);
+        ? Fetch{ 4, quicr::messages::GroupOrder::kAscending, {}, *join_fetch, absolute }
+        : std::optional<Fetch>(std::nullopt);
 
-    std::vector<SubTrackHandlerStruct> sub_track_handlers;
+    std::vector<SubTrackHandlerStruct> sub_track_handlers; // itt TOVÁBBRA IS csak non-video-k legyenek
 
-    quicr::FullTrackName catalog_name = quicr::example::MakeFullTrackName("bbb", "catalog");
+    // ---- Perzisztens (statikus) állapotok a teljes függvény-élettartamra ----
+    static VideoToggleContext s_vctx;       // videós handlerek + aktív index
+    static std::atomic_bool s_keyloop_running{false};
+    static std::thread       s_keyloop;
+    static std::atomic_bool  s_toggle_requested{false}; // keyloop állítja, főciklus kezeli
+    static std::mutex        s_vctx_mu;     // videós kontextus védelme
 
     auto sub_util = std::make_shared<SubscriberUtil>();
 
+    // 1) KATALÓGUS FELIRATKOZÁS
     auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace, "catalog");
-
-    const auto catalog_track_handler = std::make_shared<MySubscribeTrackHandler>(catalog_full_track_name, filter_type, joining_fetch, sub_util, true);
+    const auto catalog_track_handler =
+        std::make_shared<MySubscribeTrackHandler>(catalog_full_track_name, filter_type, joining_fetch, sub_util, true);
 
     SPDLOG_INFO("Started subscriber");
 
-    bool subscribe_track{ false };
-
-    while (not stop) {
-        if ((!subscribe_track) && (client->GetStatus() == MyClient::Status::kReady)) {
-            std::cerr << "Subscribing to catalog track" << std::endl;
-            client->SubscribeTrack(catalog_track_handler);
-            subscribe_track = true;
-        }
-
-        while (sub_util->catalog_read == false) {
+    if (client->GetStatus() == MyClient::Status::kReady) {
+        std::cerr << "Subscribing to catalog track" << std::endl;
+        client->SubscribeTrack(catalog_track_handler);
+    } else {
+        // kis várakozás míg Ready lesz
+        while (!stop && client->GetStatus() != MyClient::Status::kReady) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            SPDLOG_INFO("Waiting for catalog to be ready");
-            if (moq_example::terminate) {
-                break;
-            }
         }
-        if (moq_example::terminate) {
-            continue;
+        if (!stop) {
+            client->SubscribeTrack(catalog_track_handler);
         }
-        if (sub_util->subscribed == false) {
-            SPDLOG_INFO("Subscribing to tracks based on ready catalog");
-            for (auto track  : sub_util->sub_tracks) {
-                track->namespace_ = track_namespace;
-                auto track_full_name = quicr::example::MakeFullTrackName(track_namespace, track->track_entry.name);
-                auto track_handler = std::make_shared<MySubscribeTrackHandler>(track_full_name, filter_type, joining_fetch, std::ref(sub_util), false);
+    }
+
+    // 2) Várunk, míg a catalog bejön és a track lista feltöltődik
+    while (!stop && sub_util->catalog_read == false) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        SPDLOG_INFO("Waiting for catalog to be ready");
+        if (moq_example::terminate) break;
+    }
+
+    // 3) Feliratkozás trackekre: non-video azonnal; video csak EGY kezdetben
+    if (!stop && sub_util->subscribed == false) {
+        SPDLOG_INFO("Subscribing to tracks based on ready catalog");
+
+        // vctx ürítése (ha újraindulna)
+        {
+            std::lock_guard<std::mutex> lk(s_vctx_mu);
+            s_vctx.video_names.clear();
+            s_vctx.handler_by_name.clear();
+            s_vctx.active_idx = -1;
+        }
+
+        for (auto track : sub_util->sub_tracks) {
+            track->namespace_ = track_namespace;
+            std::string name = track->track_entry.name;
+
+            auto track_full_name = quicr::example::MakeFullTrackName(track_namespace, name);
+            auto track_handler   = std::make_shared<MySubscribeTrackHandler>(track_full_name, filter_type, joining_fetch, sub_util, false);
+
+            if (IsVideoTrackName(name)) {
+                // csak ELTÁROLJUK; feliratkozás majd lejjebb
+                std::lock_guard<std::mutex> lk(s_vctx_mu);
+                if (s_vctx.handler_by_name.find(name) == s_vctx.handler_by_name.end()) {
+                    s_vctx.handler_by_name[name] = track_handler;
+                    // ne duplikáljunk neveket
+                    if (std::find(s_vctx.video_names.begin(), s_vctx.video_names.end(), name) == s_vctx.video_names.end())
+                        s_vctx.video_names.push_back(name);
+                }
+            } else {
+                // NON-VIDEO: azonnal subscribe, és eltesszük az unsubscribe-hoz
                 client->SubscribeTrack(track_handler);
                 SubTrackHandlerStruct track_handler_struct{track_handler, *track};
                 sub_track_handlers.push_back(track_handler_struct);
-                SPDLOG_INFO("Subscribed track name: {0}", track->track_entry.name);
+                SPDLOG_INFO("Subscribed (non-video) track name: {}", name);
             }
-            sub_util->subscribed = true;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // Kezdeti video feliratkozás: az elsőre
+        {
+            std::lock_guard<std::mutex> lk(s_vctx_mu);
+            if (!s_vctx.video_names.empty()) {
+                s_vctx.active_idx = 0;
+                const std::string& first = s_vctx.video_names[s_vctx.active_idx];
+                auto it = s_vctx.handler_by_name.find(first);
+                if (it != s_vctx.handler_by_name.end() && it->second) {
+                    client->SubscribeTrack(it->second);
+                    SPDLOG_INFO("Subscribed initial VIDEO track: {}", first);
+                } else {
+                    SPDLOG_WARN("Initial VIDEO handler not found for name={}", first);
+                }
+            } else {
+                SPDLOG_INFO("No VIDEO tracks found to subscribe initially.");
+            }
+        }
+
+        // Billentyűfigyelő szál: CSAK jelez (flag), nem hív Client-et!
+        if (!s_keyloop_running.exchange(true)) {
+            if (s_keyloop.joinable()) s_keyloop.join(); // elvileg nem szükséges, védekezés
+            s_keyloop = std::thread([]() {
+                int tty_fd = open("/dev/tty", O_RDONLY | O_NONBLOCK);
+                if (tty_fd < 0) {
+                    fprintf(stderr, "[toggle] /dev/tty not available; key toggle disabled.\n");
+                    s_keyloop_running = false;
+                    return;
+                }
+                termios oldt = SetRawInputFD(tty_fd);
+                auto restore = [&]() { tcsetattr(tty_fd, TCSANOW, &oldt); close(tty_fd); };
+
+                while (s_keyloop_running.load(std::memory_order_relaxed)) {
+                    int c;
+                    char ch;
+                    int r = ::read(tty_fd, &ch, 1);
+                    if (r <= 0) { c = EOF; } else { c = (unsigned char)ch; }
+
+                    if (c == EOF) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+                        continue;
+                    }
+                    if (c == 'v' || c == 'V') {
+                        s_toggle_requested = true; // csak jelzés, a váltást a subscriber szál végzi!
+                    }
+                }
+                restore();
+            });
+        }
+
+        sub_util->subscribed = true;
     }
 
+    // 4) FŐ CIKLUS — itt fut le a váltás (thread-safe, nincs Client hívás másik szálról)
+    while (not stop) {
+        if (moq_example::terminate) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
+        // Pending toggle?
+        if (s_toggle_requested.load(std::memory_order_relaxed)) {
+            // egy csomagban intézzük az Unsubscribe->Subscribe sorrendet
+            std::string cur, next;
+            std::shared_ptr<MySubscribeTrackHandler> cur_h, next_h;
+
+            { // csak olvasáshoz/íráshoz védjük a contextet
+                std::lock_guard<std::mutex> lk(s_vctx_mu);
+                s_toggle_requested = false;
+
+                if (s_vctx.video_names.size() >= 2 && s_vctx.active_idx >= 0) {
+                    cur = s_vctx.video_names[s_vctx.active_idx];
+                    auto cur_it = s_vctx.handler_by_name.find(cur);
+                    if (cur_it != s_vctx.handler_by_name.end()) {
+                        cur_h = cur_it->second;
+                    }
+
+                    s_vctx.active_idx = (s_vctx.active_idx + 1) % (int)s_vctx.video_names.size();
+                    next = s_vctx.video_names[s_vctx.active_idx];
+                    auto next_it = s_vctx.handler_by_name.find(next);
+                    if (next_it != s_vctx.handler_by_name.end()) {
+                        next_h = next_it->second;
+                    }
+                } else {
+                    fprintf(stderr, "[toggle] Not enough video tracks or invalid active index.\n");
+                }
+            }
+
+            // A tényleges Client-hívások a subscriber szálon:
+            if (cur_h) {
+                try { client->UnsubscribeTrack(cur_h); } catch (...) {}
+            }
+            if (next_h) {
+                try { client->SubscribeTrack(next_h); } catch (...) {}
+                fprintf(stderr, "[toggle] Switched VIDEO to: %s\n", next.c_str());
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // 5) LEZÁRÁS: keyloop leállítás, unsubscribe
+    s_keyloop_running = false;
+    if (s_keyloop.joinable()) s_keyloop.join();
+
+    // catalog le
     client->UnsubscribeTrack(catalog_track_handler);
+
+    // non-video le
     for (auto [track_handler, trackDetails] : sub_track_handlers) {
         client->UnsubscribeTrack(track_handler);
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // video le (bár a relay oldali unannounce kezelheti, explicit rendbetesszük)
+    {
+        std::lock_guard<std::mutex> lk(s_vctx_mu);
+        for (auto& kv : s_vctx.handler_by_name) {
+            if (kv.second) {
+                try { client->UnsubscribeTrack(kv.second); } catch (...) {}
+            }
+        }
+        s_vctx.handler_by_name.clear();
+        s_vctx.video_names.clear();
+        s_vctx.active_idx = -1;
+    }
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     SPDLOG_INFO("Subscriber done track");
     moq_example::terminate = true;
 }
+
 
 /*===========================================================================*/
 // Fetch thread to perform fetch

@@ -28,7 +28,7 @@ struct MP4Chunk {
   MP4Atom moof;
   MP4Atom mdat;
   int track_id = -1;
-  bool is_keyframe = false; // Indicates if this fragment contains a keyframe
+  bool has_keyframe = false; // Indicates if this fragment contains a keyframe
 };
 
 class PublisherSharedState {
