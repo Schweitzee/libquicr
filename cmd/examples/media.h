@@ -14,6 +14,7 @@
 #include "concurrentqueue.h" // moodycamel
 
 #include "catalog.hpp"
+#include "spdlog/fmt/bundled/chrono.h"
 #include "spdlog/spdlog.h"
 
 struct MP4Atom {
@@ -23,69 +24,90 @@ struct MP4Atom {
   int track_id = -1;  // Will be set for moof atoms
 };
 
-// Represents a complete fragment (moof+mdat pair)
+// Represents a complete fragment (moof+mdat pair), either moof and mdat, or whole_chunk, but both may not be empty
 struct MP4Chunk {
-  MP4Atom moof;
-  MP4Atom mdat;
+  MP4Atom moof; //may be nothing
+  MP4Atom mdat; //may be nothing
+  MP4Atom whole_chunk; // may be nothing, contains both moof+mdat
   int track_id = -1;
   bool has_keyframe = false; // Indicates if this fragment contains a keyframe
 };
 
-class PublisherSharedState {
-  std::deque<std::shared_ptr<MP4Chunk>> chunks;
+class TrackPublishData
+{
+    std::atomic<uint64_t> dropped{0};
 
-  std::atomic<uint64_t> dropped{0};
+    moodycamel::ConcurrentQueue<MP4Chunk> chunk_q;
+    moodycamel::ProducerToken prod_tok{chunk_q};
+    moodycamel::ConsumerToken cons_tok{chunk_q};
+public:
+    int track_id{ -1 };
+
+    std::string track_name;
+
+    uint64_t group_id{ 0 };
+    uint64_t object_id{ 0 };
+    uint64_t subgroup_id{ 0 };
 
 
 
-  MP4Atom ftyp;
-  MP4Atom moov;
+    explicit TrackPublishData (size_t capacity_pow2 = 1024)
+        : chunk_q(capacity_pow2), // kezdeti kapacitás (később dinamikusan bővíthet)
+          prod_tok(chunk_q),
+          cons_tok(chunk_q) {}
 
-  std::mutex s_mtx;
-  std::condition_variable cv;
+
+    void PutChunk(MP4Chunk chunk) {
+        if (!chunk_q.try_enqueue(prod_tok, std::move(chunk))) {
+            // DROP-ON-FULL: csak ritkítva logoljunk
+            auto d = ++dropped;
+            if ((d & ((1u<<10)-1)) == 0) { // minden 1024. dropnál
+                // SPDLOG_DEBUG/INFO-ra állíthatod igény szerint:
+                SPDLOG_WARN("PublisherSharedState: queue full, dropped ~{} chunks total", d);
+            }
+        }
+    }
+    MP4Chunk GetChunk(const bool& /*exit*/) {
+        MP4Chunk out;
+        if (chunk_q.try_dequeue(cons_tok, out)) return out;
+        return {};
+    }
+};
+
+class PublisherSharedState
+{
+    std::condition_variable cv;
+    std::mutex s_mtx;
 
 public:
     Catalog catalog;
+
+    std::map<int, std::shared_ptr<TrackPublishData>> tracks;
+
     bool catalog_ready = false;
-    moodycamel::ConcurrentQueue<std::shared_ptr<MP4Chunk>> chunk_q;
-    moodycamel::ProducerToken prod_tok{chunk_q};
-    moodycamel::ConsumerToken cons_tok{chunk_q};
+    // moodycamel::ConcurrentQueue<std::shared_ptr<MP4Chunk>> chunk_q;
+    // moodycamel::ProducerToken prod_tok{chunk_q};
+    // moodycamel::ConsumerToken cons_tok{chunk_q};
 
+    PublisherSharedState (){};
 
-    explicit PublisherSharedState(size_t capacity_pow2 = 1024)
-    : chunk_q(capacity_pow2) // kezdeti kapacitás (később dinamikusan bővíthet)
-    , prod_tok(chunk_q)
-    , cons_tok(chunk_q){}
+    void SetCatalogReady()
+    {
+        {
+            // A lock csak a változó írásáig kell
+            std::lock_guard<std::mutex> lock(s_mtx);
+            catalog_ready = true;
+        }
+        // A lock feloldása után értesítjük a várakozó szálat/szálakat
+        cv.notify_all();
+    }
 
-  void WaitForCatalogReady(const bool& stop_threads)
+    void WaitForCatalogReady(const bool& stop_threads)
   {
-    std::unique_lock<std::mutex> lock(s_mtx);
+      std::unique_lock<std::mutex> lock(s_mtx);
       cv.wait(lock, [&]() {
           return catalog_ready || stop_threads;
       });
-  }
-
-  MP4Atom getFtyp() {
-    std::lock_guard<std::mutex> lock(s_mtx);
-    return ftyp;
-  }
-
-  MP4Atom getMoov() {
-    std::lock_guard<std::mutex> lock(s_mtx);
-    return moov;
-  }
-
-  void setFtyp(const MP4Atom& atom) {
-    std::lock_guard<std::mutex> lock(s_mtx);
-    ftyp = atom;
-  }
-
-  void setMoov(const MP4Atom& atom) {
-    {
-      std::lock_guard<std::mutex> lock(s_mtx);
-      moov = atom;
-    }
-    cv.notify_all();
   }
 
   // void PutChunk(std::shared_ptr<MP4Chunk> chunk)
@@ -98,16 +120,7 @@ public:
   //   cv.notify_one();
   // }
       // Non-blocking push: true = sikerült, false = tele (vagy mem nyomás)
-    void PutChunk(std::shared_ptr<MP4Chunk> chunk) {
-            if (!chunk_q.try_enqueue(prod_tok, std::move(chunk))) {
-                  // DROP-ON-FULL: csak ritkítva logoljunk
-                  auto d = ++dropped;
-                  if ((d & ((1u<<10)-1)) == 0) { // minden 1024. dropnál
-                        // SPDLOG_DEBUG/INFO-ra állíthatod igény szerint:
-                        SPDLOG_WARN("PublisherSharedState: queue full, dropped ~{} chunks total", d);
-                      }
-                }
-          }
+
 
   // std::shared_ptr<MP4Chunk> GetChunk(const bool& exit)
   // {
@@ -128,11 +141,6 @@ public:
   // }
 
     // Nem blokkoló: ha nincs adat, nullptr-t ad vissza (exit itt nem befolyásol)
-    std::shared_ptr<MP4Chunk> GetChunk(const bool& /*exit*/) {
-            std::shared_ptr<MP4Chunk> out;
-            if (chunk_q.try_dequeue(cons_tok, out)) return out;
-            return {};
-    }
 
   void NotifyAll()
   {
