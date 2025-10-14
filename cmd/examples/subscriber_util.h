@@ -9,18 +9,21 @@
 
 #include "catalog.hpp"
 
+class MySubscribeTrackHandler;
+
 struct SubTrack
 {
-    TrackEntry track_entry;
+    CatalogTrackEntry track_entry;
     std::string namespace_;
-
+    std::vector<uint8_t> init;
 };
 
 class SubscriberUtil
 {
 
 public:
-    std::vector<std::shared_ptr<SubTrack>> sub_tracks;
+    Catalog catalog;
+    std::map <std::shared_ptr<MySubscribeTrackHandler>, std::shared_ptr<SubTrack>> sub_tracks;
     bool catalog_read = false;
     bool subscribed = false;
 

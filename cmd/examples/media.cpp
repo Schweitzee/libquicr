@@ -149,12 +149,12 @@ void CMafParser::ParseBuffer(const uint8_t* buffer, size_t buffer_size) {
         atom.data.assign(buffer + offset, buffer + offset + atom_size);
 
         if (atom_type == "ftyp") {
-            state.setFtyp(atom);
+            //nothing
         } else if (atom_type == "moov") {
             state.catalog.clear();
             ProcessMoov(atom); // Extract track info from moov
             state.catalog.validate();
-            state.setMoov(atom);
+            //state.setMoov(atom);
             state.catalog_ready = true;
         } else if (atom_type == "moof") {
             atom.track_id = ExtractTrackIdFromMoof(atom);
@@ -165,7 +165,6 @@ void CMafParser::ParseBuffer(const uint8_t* buffer, size_t buffer_size) {
 
         offset += atom_size;
     }
-
     // Process any moof/mdat pairs
     ProcessFragments(atoms);
 }
@@ -193,7 +192,6 @@ void CMafParser::ProcessMoov(const MP4Atom& moov) const
         if (box_size == 0) break;
         offset += box_size;
     }
-
 }
 
 void CMafParser::ProcessTrack(const uint8_t* trak_data, uint32_t trak_size) const
@@ -280,17 +278,17 @@ void CMafParser::ProcessTrack(const uint8_t* trak_data, uint32_t trak_size) cons
         offset += box_size;
     }
 
-    // Create appropriate track based on handler_type
-    if (track_id != -1) {
-        std::cout << "track_id: " << track_id << "type: " << handler_type << std::endl;
-        if (handler_type == "vide") {
-            state.catalog.add_video("video"+std::to_string(track_id), track_id, width, height, codec);
-        } else if (handler_type == "soun") {
-            state.catalog.add_audio("sound" + std::to_string(track_id), track_id, "und", codec);
-        } else {
-            state.catalog.add_else("Undefined_track_"  + std::to_string(track_id), track_id);
-        }
-    }
+     // // Create appropriate track based on handler_type
+     // if (track_id != -1) {
+     //     std::cout << "track_id: " << track_id << "type: " << handler_type << std::endl;
+     //     if (handler_type == "vide") {
+     //         state.catalog.add_video("video"+std::to_string(track_id), track_id, width, height, codec);
+     //     } else if (handler_type == "soun") {
+     //         state.catalog.add_audio("sound" + std::to_string(track_id), track_id, "und", codec);
+     //     } else {
+     //         state.catalog.add_else("Undefined_track_"  + std::to_string(track_id), track_id, );
+     //     }
+     // }
 }
 
 // Process fragments and associate them with tracks
@@ -319,10 +317,11 @@ void CMafParser::ProcessFragments(const std::vector<MP4Atom>& atoms) const
             //    << ", size: " << chunk_ptr->mdat.data.size()
             //    << ", keyframe: " << chunk_ptr->is_keyframe << std::endl;
             //state.PutChunk(chunk_ptr);
-            while (!state.chunk_q.try_enqueue(state.prod_tok, chunk_ptr)) {
-                std::this_thread::yield(); // vagy sleep_for(50us)
-            }
-            last_moof = MP4Atom(); // Reset last_moof after processing
+
+            // while (!state.chunk_q.try_enqueue(state.prod_tok, chunk_ptr)) {
+            //     std::this_thread::yield(); // vagy sleep_for(50us)
+            // }
+            // last_moof = MP4Atom(); // Reset last_moof after processing
         }
     }
 }

@@ -13,3 +13,6 @@
 [submodule "dependencies/spdlog"]
 	path = dependencies/spdlog
 	url = https://github.com/gabime/spdlog.git
+[submodule "dependencies/ffmpeg"]
+	path = dependencies/ffmpeg
+	url = https://git.ffmpeg.org/ffmpeg.git
