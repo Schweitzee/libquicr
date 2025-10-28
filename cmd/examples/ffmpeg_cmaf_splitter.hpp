@@ -24,15 +24,20 @@ extern "C" {
     }
 
 struct FfmpegCmafSplitterConfig {
-  std::string input_url = "pipe:0"; // e.g. "pipe:0" or "http://..."
-  int io_buffer_kb = 32;
-  // Demux low-latency hints
-  std::string fflags = "nobuffer";
-  int probesize = 64*1024;
-  int analyzeduration_us = 0;
-  std::string protocol_whitelist;
+    std::string input_url = "pipe:0";
+    int  io_buffer_kb = 32;
+    std::string fflags = "nobuffer";
+    int  probesize = 64*1024;
+    int  analyzeduration_us = 0;
+    std::string protocol_whitelist;
 
-  bool use_custom_stdin = true;  // ha true, custom AVIO-t használunk a stdin-re
+    bool use_custom_stdin = false;    // <- fájlból olvasáshoz KAPCSOLD KI
+
+    // új: fragmentálás finomhangolás + tempózás fájlból
+    bool frag_on_key = true;          // video: keyframe-szél mentén darabolás
+    int  frag_duration_us = 500000;   // 500 ms
+    int  min_frag_duration_us = 200000; // 200 ms
+    bool realtime_pace = true;        // fájl → „életszerű” tempó
 
 };
 
@@ -44,7 +49,7 @@ public:
   explicit FfmpegCmafSplitter(const FfmpegCmafSplitterConfig& cfg, FfmpegToMoQAdapter& adapter);
   ~FfmpegCmafSplitter();
 
-  int run(const bool& stop);
+  int Run(const std::atomic<bool>& stop);
 
 private:
   struct MemBuffer { std::vector<uint8_t> data; };

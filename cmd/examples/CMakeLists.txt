@@ -5,39 +5,34 @@ include(FetchContent)
 
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
 FetchContent_MakeAvailable(json)
-find_package(ZLIB REQUIRED)
-include(ExternalProject)
-set(FFMPEG_SOURCE_DIR ${CMAKE_SOURCE_DIR}/dependencies/ffmpeg)
-set(FFMPEG_BUILD_DIR  ${CMAKE_BINARY_DIR}/ffmpeg_build)
-set(FFMPEG_INSTALL_DIR ${CMAKE_BINARY_DIR}/ffmpeg_install)
 
-ExternalProject_Add(ffmpeg_external
-        SOURCE_DIR ${FFMPEG_SOURCE_DIR}
-        BINARY_DIR ${FFMPEG_BUILD_DIR}
-        CONFIGURE_COMMAND
-        ${FFMPEG_SOURCE_DIR}/configure
-        --prefix=${FFMPEG_INSTALL_DIR}
-        --disable-programs
-        --disable-doc
-        --disable-debug
-        --disable-network
-        --disable-everything
-        --enable-avformat
-        --enable-avcodec
-        --enable-avutil
-        --enable-protocol=file
-        --enable-demuxer=mov,mp4,m4a
-        --enable-muxer=mp4
-        --enable-parser=h264,aac
-        BUILD_COMMAND $(MAKE) -j
-        INSTALL_COMMAND $(MAKE) install
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET
+        gstreamer-1.0>=1.18
+        gstreamer-app-1.0
+        gstreamer-video-1.0
+        gstreamer-audio-1.0
+        gobject-2.0
+        glib-2.0
+        gstreamer-1.0 gstreamer-app-1.0 gstreamer-pbutils-1.0
 )
+add_library(gstreamer_import INTERFACE)
+target_link_libraries(gstreamer_import INTERFACE PkgConfig::GSTREAMER)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG IMPORTED_TARGET
+        libavformat
+        libavcodec
+        libavutil
+)
+if (NOT FFMPEG_FOUND)
+        message(FATAL_ERROR
+                "System FFmpeg nem található (pkg-config). "
+                "Állítsd USE_SYSTEM_FFMPEG=OFF-ra, hogy a dependencies/ffmpeg forrásból épüljön.")
+endif()
 
 add_library(ffmpeg_import INTERFACE)
-add_dependencies(ffmpeg_import ffmpeg_external)
-target_include_directories(ffmpeg_import INTERFACE ${FFMPEG_INSTALL_DIR}/include)
-target_link_directories(ffmpeg_import INTERFACE ${FFMPEG_INSTALL_DIR}/lib)
-target_link_libraries(ffmpeg_import INTERFACE avformat avcodec avutil ZLIB::ZLIB)
+target_link_libraries(ffmpeg_import INTERFACE PkgConfig::FFMPEG)
 
 add_executable(qclient client.cpp
         subscriber_util.h)
@@ -62,12 +57,23 @@ add_executable(qclient2
         media.h
         media.cpp
         catalog.hpp
-        async_stdin_reader.cpp
         ffmpeg_cmaf_splitter.cpp
         ffmpeg_cmaf_splitter.hpp
         ffmpeg_moq_adapter.cpp
-        ffmpeg_moq_adapter.h)
-target_link_libraries(qclient2 PRIVATE quicr nlohmann_json::nlohmann_json ffmpeg_import)
+        ffmpeg_moq_adapter.h
+        subscriber_util.cpp
+        MySubscribeTrackHandler.cpp
+        MySubscribeTrackHandler.h
+        base64_tool.h
+        helper_functions.h
+        MyPublishTrackhandler.cpp
+        MyPublishTrackhandler.h)
+target_link_libraries(qclient2 PRIVATE
+        quicr
+        nlohmann_json::nlohmann_json
+        ffmpeg_import
+        gstreamer_import)
+
 target_include_directories(qclient2 PRIVATE
         ../dependencies
         ${FFMPEG_INSTALL_DIR}/include

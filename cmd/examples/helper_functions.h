@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
-#pragma once
 
+#ifndef QUICR_EXAMPLE_HELPER_FUNCTIONS_H
+#define QUICR_EXAMPLE_HELPER_FUNCTIONS_H
+
+#pragma once
 #include <chrono>
 #include <iomanip>
 #include <ostream>
@@ -10,12 +13,25 @@
 
 namespace quicr::example {
 
+    inline std::string ToString(const quicr::FullTrackName& ftn)
+    {
+        std::string str;
+        const auto& entries = ftn.name_space.GetEntries();
+        for (const auto& entry : entries) {
+            str += std::string(entry.begin(), entry.end()) + '_';
+        }
+
+        str += std::string(ftn.name.begin(), ftn.name.end());
+
+        return str;
+    }
+
     /**
      * @brief Get UTC timestamp as a string
      *
      * @return string value of UTC time
      */
-    static std::string GetTimeStr() noexcept
+    inline std::string GetTimeStr() noexcept
     {
         std::ostringstream oss;
 
@@ -38,7 +54,7 @@ namespace quicr::example {
      * @param track_alias               track alias as optional
      * @return quicr::FullTrackName of the params
      */
-    static FullTrackName const MakeFullTrackName(const std::string& track_namespace,
+    inline FullTrackName const MakeFullTrackName(const std::string& track_namespace,
                                                  const std::string& track_name) noexcept
     {
         const auto split = [](std::string str, const std::string& delimiter) {
@@ -59,3 +75,5 @@ namespace quicr::example {
         return full_track_name;
     }
 }
+
+#endif // QUICR_EXAMPLE_HELPER_FUNCTIONS_H
