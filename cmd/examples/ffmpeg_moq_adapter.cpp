@@ -1,37 +1,8 @@
 
 #include "ffmpeg_moq_adapter.h"
 
+#include "base64_tool.h"
 #include <stdexcept>
-
-
-constexpr std::string_view kValues = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";//=
-inline std::string Encode(const std::vector<uint8_t>& in) {
-    std::string out;
-    out.reserve(((in.size() + 2) / 3) * 4);
-    size_t i = 0;
-    while (i + 3 <= in.size()) {
-        uint32_t v = (in[i] << 16) | (in[i+1] << 8) | in[i+2];
-        out.push_back(kValues[(v >> 18) & 0x3F]);
-        out.push_back(kValues[(v >> 12) & 0x3F]);
-        out.push_back(kValues[(v >> 6)  & 0x3F]);
-        out.push_back(kValues[v & 0x3F]);
-        i += 3;
-    }
-    if (i + 1 == in.size()) {
-        uint32_t v = (in[i] << 16);
-        out.push_back(kValues[(v >> 18) & 0x3F]);
-        out.push_back(kValues[(v >> 12) & 0x3F]);
-        out.push_back('=');
-        out.push_back('=');
-    } else if (i + 2 == in.size()) {
-        uint32_t v = (in[i] << 16) | (in[i+1] << 8);
-        out.push_back(kValues[(v >> 18) & 0x3F]);
-        out.push_back(kValues[(v >> 12) & 0x3F]);
-        out.push_back(kValues[(v >> 6)  & 0x3F]);
-        out.push_back('=');
-    }
-    return out;
-}
 
 // --- OnInit: elmentjük az init szegmenst a shared_state-be,
 // és meghívjuk a PublishCatalog-ot ---
@@ -48,24 +19,46 @@ void FfmpegToMoQAdapter::OnInit(int stream_index, const uint8_t* init, size_t in
     track.name = track.type + std::to_string(stream_index);
     track.idx = stream_index;
 
-    std::vector init_vec(init, init + init_len);
-    std::string b64init = Encode(init_vec);
-    track.init_binary_size = init_len;
-    track.b64_init_data_ = b64init;
-
-    shared_->catalog.addTrackEntry(std::move(track));
+    SPDLOG_DEBUG("parsed track data: name={0} idx={1} type={2}\n", track.name, track.idx, track.type);
 
     // for the buffer
     auto tpd = std::make_shared<TrackPublishData>();
     tpd->track_name = track.name;
     tpd->track_id = stream_index;
-    shared_->tracks[stream_index] = tpd;
+
+    // if (stream_index == 2) {
+    //     try {
+    //         std::vector data(init, init + init_len);
+    //         quicr::BytesSpan data_span = quicr::BytesSpan(data.data(), data.size());
+    //         fwrite(data_span.data(), data_span.size(), 1, stdout);
+    //         fflush(stdout);
+    //     } catch (...) {
+    //         SPDLOG_ERROR("OnFrag: exception during writing init data to stdout for stream {}", stream_index);
+    //     }
+    // }
+
+    SPDLOG_DEBUG("trying to get lock for init segment processing - {}\n", stream_index);
+    {
+        std::lock_guard<std::mutex> lk(shared_->s_mtx);
+
+        SPDLOG_DEBUG("Lock acquired for init segment processing - {}\n", stream_index);
+
+        // Katalógus bejegyzés
+        std::vector<uint8_t> init_vec(init, init + init_len);
+        track.init_binary_size = init_len;
+        track.b64_init_data_   = base64::Encode(init_vec);
+        shared_->catalog.addTrackEntry(std::move(track)); // move nem kötelező, másolás is ok
+
+        // TrackPublishData bepakolása - *nincs* köztes nullptr
+        auto [it, inserted] = shared_->tracks.try_emplace(stream_index, tpd);
+        if (!inserted) it->second = tpd; // felülírás, ha már létezett
+    }
 
     if (last_init) {
         fprintf(stderr, "[PUB-DEBUG] >>> Last init segment processed. Calling SetCatalogReady().\n");
         shared_->SetCatalogReady();
     }
-    SPDLOG_TRACE("[PUB-DEBUG] >>> init segment processed. - {}\n", stream_index);
+    SPDLOG_INFO("[PUB-DEBUG] >>> init segment processed. - {}\n", stream_index);
 };
 
 void FfmpegToMoQAdapter::OnFrag(int stream_index,
@@ -76,11 +69,30 @@ void FfmpegToMoQAdapter::OnFrag(int stream_index,
     MP4Chunk ch;
     ch.whole_chunk.data.assign(moof, moof + moof_len);
     ch.has_keyframe = keyframe;
-    try {
-        shared_->tracks.at(stream_index)->PutChunk(std::move(ch)); //TODO: exception safe-é tenni, mivel ekkor még lehet nem lesz kész a map
-    } catch (...) {
-        SPDLOG_TRACE("gatya");
+    ch.track_id = stream_index;
+
+    // if (ch.track_id == 2) {
+    //     //std::cout << fmt::format("DELIMITER") << std::endl;
+    //     std::vector data(moof, moof + moof_len);
+    //     fwrite(data.data(), data.size(), 1, stdout);
+    //     fflush(stdout);
+    // }
+
+    std::shared_ptr<TrackPublishData> tpd;
+
+        auto it = shared_->tracks.find(stream_index);
+        if (it != shared_->tracks.end()) tpd = it->second; // shared_ptr másolása zár alatt
+    if (tpd) {
+        tpd->PutChunk(std::move(ch));
+        SPDLOG_DEBUG("OnFrag: chunk added for stream \"{}\", (keyframe={})\n current chunks in line (aprox) {}", tpd->track_name, keyframe, tpd->ChunkQueueSize());
+    } else {
+        static std::atomic<uint32_t> miss{0};
+        auto c = ++miss;
+        if ((c & 0xFFu) == 0) {
+            SPDLOG_WARN("OnFrag: missing TrackPublishData for stream {}", stream_index);
+        }
     }
+    tpd->cv.notify_one();
 };
 
 // Parse buffer and process atoms
@@ -227,7 +239,6 @@ void FfmpegToMoQAdapter::ProcessSingleTrack(const uint8_t* trak_data, uint32_t t
 
      // Create appropriate track based on handler_type
      if (track_id != -1) {
-         std::cout << "track_id: " << track_id << "type: " << handler_type << std::endl;
          if (handler_type == "vide") {
              catalog_data.height = height;
              catalog_data.width = width;

@@ -12,6 +12,19 @@
 
 namespace quicr::example {
 
+    inline std::string ToString(const quicr::FullTrackName& ftn)
+    {
+        std::string str;
+        const auto& entries = ftn.name_space.GetEntries();
+        for (const auto& entry : entries) {
+            str += std::string(entry.begin(), entry.end()) + '_';
+        }
+
+        str += std::string(ftn.name.begin(), ftn.name.end());
+
+        return str;
+    }
+
     /**
      * @brief Get UTC timestamp as a string
      *
