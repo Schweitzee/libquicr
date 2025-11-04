@@ -19,8 +19,8 @@
 #include <filesystem>
 #include <fstream>
 
-#include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
+#include <gst/gst.h>
 
 #include <quicr/publish_fetch_handler.h>
 
@@ -50,22 +50,20 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
 {
 
     bool is_catalog_;
-    std::shared_ptr<SubscriberUtil> util_; //either util or track has to be set for InitCatalogTrack if "catalog == true"
-    std::shared_ptr<SubTrack> track_; //this has to be set with InitMediaTrack for media tracks if "catalog == false"
+    std::shared_ptr<SubscriberUtil>
+      util_;                          // either util or track has to be set for InitCatalogTrack if "catalog == true"
+    std::shared_ptr<SubTrack> track_; // this has to be set with InitMediaTrack for media tracks if "catalog == false"
 
     std::shared_ptr<SubscriberGst> gst_callback_;
 
     uint64_t waitfor_Group = 0;
-
 
     bool stop_at_newGroup = false;
     uint64_t stop_Group_after = 0;
     bool video_started_ = false;
     std::shared_ptr<std::atomic_bool> unsub_;
 
-
   public:
-
     MySubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
                             quicr::messages::FilterType filter_type,
                             const std::optional<JoiningFetch>& joining_fetch,
@@ -75,8 +73,7 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
         is_catalog_ = catalog;
     }
 
-
-    uint64_t GetCurrentGroup() const { return current_group_id_;}
+    uint64_t GetCurrentGroup() const { return current_group_id_; }
 
     uint64_t StopAtNewGroup(std::shared_ptr<std::atomic_bool> unsub)
     {
@@ -89,7 +86,7 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
     void InitCatalogTrack(std::shared_ptr<SubscriberUtil> util)
     {
         if (is_catalog_ == false) {
-                throw std::runtime_error("InitCatalogTrack called on non-catalog track");
+            throw std::runtime_error("InitCatalogTrack called on non-catalog track");
         }
         util_ = util;
     }
@@ -104,7 +101,7 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
 
     void SetSubscribeGst(const std::shared_ptr<SubscriberGst>& gst)
     {
-        //setting the gstreamer callback handler
+        // setting the gstreamer callback handler
         gst_callback_ = gst;
     }
 
@@ -126,9 +123,8 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
 
     void ObjectReceived(const quicr::ObjectHeaders& hdr, quicr::BytesSpan data) override
     {
-        std::string s(reinterpret_cast<const char*>(GetFullTrackName().name.data()),
-                      GetFullTrackName().name.size());
-        //SPDLOG_INFO("Received message on {0}: Group:{1}, Object:{2}", s, hdr.group_id, hdr.object_id);
+        std::string s(reinterpret_cast<const char*>(GetFullTrackName().name.data()), GetFullTrackName().name.size());
+        // SPDLOG_INFO("Received message on {0}: Group:{1}, Object:{2}", s, hdr.group_id, hdr.object_id);
 
         if (is_catalog_) {
             // Parse catalog and print to stdout
@@ -138,7 +134,7 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
                 Catalog catalog;
                 catalog.from_json(catalog_str);
 
-                SPDLOG_INFO( "Catalog read with {0} tracks", catalog.tracks().size());
+                SPDLOG_INFO("Catalog read with {0} tracks", catalog.tracks().size());
                 util_->catalog = std::move(catalog);
                 util_->catalog_read = true;
             } catch (const std::exception& e) {
@@ -148,13 +144,13 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
             return;
         }
 
-        if (waitfor_Group != 0  && hdr.object_id != 0) {
-            SPDLOG_INFO( "Waiting for group after {0}", waitfor_Group);
+        if (waitfor_Group != 0 && hdr.object_id != 0) {
+            SPDLOG_INFO("Waiting for group after {0}", waitfor_Group);
             return;
         }
         if (waitfor_Group != 0 && hdr.object_id == 0 && hdr.group_id < waitfor_Group) {
-                SPDLOG_INFO( "Waiting for group after {0}, current group: {1}", waitfor_Group, hdr.group_id);
-                return;
+            SPDLOG_INFO("Waiting for group after {0}, current group: {1}", waitfor_Group, hdr.group_id);
+            return;
         }
         if (waitfor_Group <= hdr.group_id && hdr.object_id == 0) {
             waitfor_Group = 0;
@@ -165,11 +161,11 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
             if (track_->track_entry.type == "audio") {
                 gst_callback_->SelectAudio(track_->track_entry.name);
             }
-            //gst_callback_->PushInit(track_->track_entry.name, track_->init.data(), track_->init.size());
+            // gst_callback_->PushInit(track_->track_entry.name, track_->init.data(), track_->init.size());
             SPDLOG_INFO("Pushed init segment for gstream track: {0}", track_->track_entry.name);
         }
         if (stop_at_newGroup == true && hdr.group_id > stop_Group_after) {
-            SPDLOG_INFO ("Stopping at group: {0} on track: {1}", stop_Group_after, track_->track_entry.name);
+            SPDLOG_INFO("Stopping at group: {0} on track: {1}", stop_Group_after, track_->track_entry.name);
             if (unsub_ != nullptr) {
                 unsub_->store(true);
                 unsub_->notify_all();
@@ -194,14 +190,18 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
             gst_callback_->AudioPushFragment(data.data(), data.size(), hdr.object_id == 0);
         }
 
-
         {
             std::ofstream out(track_->track_entry.name + ".txt", std::ios::app);
-            out << "group: " << hdr.group_id << ", object: " << hdr.object_id << ", data size:" << std::endl << data.size() << std::endl;
+            out << "group: " << hdr.group_id << ", object: " << hdr.object_id << ", data size:" << std::endl
+                << data.size() << std::endl;
         }
 
-        SPDLOG_INFO("Pushed fragment for gstream track: {0}, Group:{1}, Object:{2}", track_->track_entry.name, hdr.group_id, hdr.object_id);
-        //std::cout << "Fragment received on "  << track_->track_entry.name << ", group: " << hdr.group_id << ", object: " << hdr.object_id << std::endl;
+        SPDLOG_INFO("Pushed fragment for gstream track: {0}, Group:{1}, Object:{2}",
+                    track_->track_entry.name,
+                    hdr.group_id,
+                    hdr.object_id);
+        // std::cout << "Fragment received on "  << track_->track_entry.name << ", group: " << hdr.group_id << ",
+        // object: " << hdr.object_id << std::endl;
     }
 
     void StatusChanged(Status status) override
@@ -212,8 +212,10 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
                     SPDLOG_INFO("Track alias: {0} is ready to read", track_alias.value());
                 }
             } break;
-            case Status::kError: {}break;
-            case Status::kPaused: {}break;
+            case Status::kError: {
+            } break;
+            case Status::kPaused: {
+            } break;
 
             default:
                 break;

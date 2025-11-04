@@ -30,7 +30,7 @@ namespace quicr::example {
      *
      * @return string value of UTC time
      */
-    static std::string GetTimeStr() noexcept
+    inline std::string GetTimeStr() noexcept
     {
         std::ostringstream oss;
 
@@ -53,7 +53,7 @@ namespace quicr::example {
      * @param track_alias               track alias as optional
      * @return quicr::FullTrackName of the params
      */
-    static FullTrackName const MakeFullTrackName(const std::string& track_namespace,
+    inline FullTrackName const MakeFullTrackName(const std::string& track_namespace,
                                                  const std::string& track_name) noexcept
     {
         const auto split = [](std::string str, const std::string& delimiter) {

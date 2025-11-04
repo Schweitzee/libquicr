@@ -19,55 +19,61 @@
 #include <string>
 #include <vector>
 
-extern "C" {
-    #include "libavformat/avformat.h"
-    }
+extern "C"
+{
+#include "libavformat/avformat.h"
+}
 
-struct FfmpegCmafSplitterConfig {
+struct FfmpegCmafSplitterConfig
+{
     std::string input_url = "pipe:0";
-    int  io_buffer_kb = 32;
+    int io_buffer_kb = 32;
     std::string fflags = "nobuffer";
-    int  probesize = 64*1024;
-    int  analyzeduration_us = 0;
+    int probesize = 64 * 1024;
+    int analyzeduration_us = 0;
     std::string protocol_whitelist;
 
-    bool use_custom_stdin = false;    // <- fájlból olvasáshoz KAPCSOLD KI
+    bool use_custom_stdin = false; // <- fájlból olvasáshoz KAPCSOLD KI
 
     // új: fragmentálás finomhangolás + tempózás fájlból
-    bool frag_on_key = true;          // video: keyframe-szél mentén darabolás
-    int  frag_duration_us = 500000;   // 500 ms
-    int  min_frag_duration_us = 200000; // 200 ms
-    bool realtime_pace = true;        // fájl → „életszerű” tempó
-
+    bool frag_on_key = true;           // video: keyframe-szél mentén darabolás
+    int frag_duration_us = 500000;     // 500 ms
+    int min_frag_duration_us = 200000; // 200 ms
+    bool realtime_pace = true;         // fájl → „életszerű” tempó
 };
 
 using OnInitFn = std::function<int(int /*stream_index*/, const uint8_t*, size_t, bool last_init)>;
 using OnFragFn = std::function<int(int /*stream_index*/, const uint8_t*, size_t, bool is_key)>;
 
-class FfmpegCmafSplitter {
-public:
-  explicit FfmpegCmafSplitter(const FfmpegCmafSplitterConfig& cfg, FfmpegToMoQAdapter& adapter);
-  ~FfmpegCmafSplitter();
+class FfmpegCmafSplitter
+{
+  public:
+    explicit FfmpegCmafSplitter(const FfmpegCmafSplitterConfig& cfg, FfmpegToMoQAdapter& adapter);
+    ~FfmpegCmafSplitter();
 
-  int Run(const std::atomic<bool>& stop);
+    int Run(const std::atomic<bool>& stop);
 
-private:
-  struct MemBuffer { std::vector<uint8_t> data; };
-  struct TrackWriter {
-    AVFormatContext* oc = nullptr;
-    AVStream*        st = nullptr;
-    AVIOContext*     pb = nullptr;
-    uint8_t*         iobuf = nullptr;
-    MemBuffer        mbuf;
-    bool             header_written = false;
-    ~TrackWriter();
-  };
+  private:
+    struct MemBuffer
+    {
+        std::vector<uint8_t> data;
+    };
+    struct TrackWriter
+    {
+        AVFormatContext* oc = nullptr;
+        AVStream* st = nullptr;
+        AVIOContext* pb = nullptr;
+        uint8_t* iobuf = nullptr;
+        MemBuffer mbuf;
+        bool header_written = false;
+        ~TrackWriter();
+    };
 
-  static int mem_write(void* opaque, const uint8_t* buf, int buf_size);
-  static int64_t mem_seek(void* opaque, int64_t offset, int whence);
+    static int mem_write(void* opaque, const uint8_t* buf, int buf_size);
+    static int64_t mem_seek(void* opaque, int64_t offset, int whence);
 
-  TrackWriter* make_writer_for_stream(AVStream* in_st);
+    TrackWriter* make_writer_for_stream(AVStream* in_st);
 
-  FfmpegCmafSplitterConfig cfg_;
-  FfmpegToMoQAdapter& adapter_;
+    FfmpegCmafSplitterConfig cfg_;
+    FfmpegToMoQAdapter& adapter_;
 };

@@ -16,8 +16,8 @@
 #include <format>
 #include <fstream>
 
-#include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
+#include <gst/gst.h>
 
 #include <quicr/publish_fetch_handler.h>
 
@@ -27,8 +27,8 @@
 #include <mutex>
 #include <thread>
 #include <unistd.h>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
 #include <termios.h>
 
@@ -41,7 +41,6 @@
 #include "subscriber_util.h"
 
 #include "MyPublishTrackhandler.h"
-
 
 #include <optional>
 
@@ -66,51 +65,55 @@ namespace qclient_consts {
 }
 
 // === GStreamer subscriber glue (auto-generated) ===
-static std::shared_ptr <SubscriberGst> g_gst = std::make_shared<SubscriberGst>();
+static std::shared_ptr<SubscriberGst> g_gst = std::make_shared<SubscriberGst>();
 
-static void GstInitOnce()
+static void
+GstInitOnce()
 {
     gst_init(nullptr, nullptr);
     static bool inited = false;
-    if (inited) return;
+    if (inited)
+        return;
     if (!g_gst->BuildPipelines()) {
         g_printerr("Failed to build base GStreamer pipeline\n");
     }
     inited = true;
 }
 
-static void GstOnCatalog(const std::vector<CatalogTrackEntry>& tracks)
+static void
+GstOnCatalog(const std::vector<CatalogTrackEntry>& tracks)
 {
     GstInitOnce();
     for (const auto& te : tracks) {
         if (te.type == "video") {
             std::vector<uint8_t> init = base64::decode_to_uint8_vec(te.b64_init_data_);
             g_gst->RegisterTrackInit(te.name, true, init.data(), init.size());
-        }
-        else if (te.type == "audio") {
+        } else if (te.type == "audio") {
             std::vector<uint8_t> init = base64::decode_to_uint8_vec(te.b64_init_data_);
             g_gst->RegisterTrackInit(te.name, false, init.data(), init.size());
         }
     }
 }
 
-static void GstOnInit(const std::string& track, const uint8_t* data, size_t len)
+static void
+GstOnInit(const std::string& track, const uint8_t* data, size_t len)
 {
     GstInitOnce();
-    //g_gst->PushInit(track, data, len);
+    // g_gst->PushInit(track, data, len);
 }
 
-static void GstSelectVideo(const std::string& track)
+static void
+GstSelectVideo(const std::string& track)
 {
     g_gst->SelectVideo(track);
 }
 
-static void GstSelectAudio(const std::string& track)
+static void
+GstSelectAudio(const std::string& track)
 {
     g_gst->SelectAudio(track);
 }
 // === end glue ===
-
 
 class MyFetchTrackHandler : public quicr::FetchTrackHandler
 {
@@ -129,7 +132,7 @@ class MyFetchTrackHandler : public quicr::FetchTrackHandler
     {
     }
 
-public:
+  public:
     static auto Create(const quicr::FullTrackName& full_track_name,
                        uint64_t start_group,
                        uint64_t start_object,
@@ -310,9 +313,7 @@ struct TrackHandlerData
 /*===========================================================================*/
 
 void
-PublishCatalog(Catalog& catalog,
-             std::shared_ptr<MyPublishTrackHandler> TH,
-             const std::atomic<bool>& stop)
+PublishCatalog(Catalog& catalog, std::shared_ptr<MyPublishTrackHandler> TH, const std::atomic<bool>& stop)
 {
     bool catalog_published = false;
     int object_id = 0;
@@ -355,17 +356,15 @@ PublishCatalog(Catalog& catalog,
 
         quicr::BytesSpan catalog_bytespan{ reinterpret_cast<const uint8_t*>(catalog_str.data()), catalog_str.size() };
 
-        quicr::ObjectHeaders obj_headers = {
-            0,
-            0,
-            0,
-            catalog_bytespan.size(),
-            quicr::ObjectStatus::kAvailable,
-            2 /*priority*/,
-            5000 /* ttl */,
-            std::nullopt,
-            std::nullopt
-        };
+        quicr::ObjectHeaders obj_headers = { 0,
+                                             0,
+                                             0,
+                                             catalog_bytespan.size(),
+                                             quicr::ObjectStatus::kAvailable,
+                                             2 /*priority*/,
+                                             5000 /* ttl */,
+                                             std::nullopt,
+                                             std::nullopt };
 
         try {
             auto status = TH->PublishObject(obj_headers, catalog_bytespan);
@@ -378,8 +377,10 @@ PublishCatalog(Catalog& catalog,
             } else if (status == decltype(status)::kOk) {
                 catalog_published = true;
                 SPDLOG_INFO("Catalog published: {0}, group id: {1}, obj. id: {2}, exiting catalog publisher",
-                    static_cast<int>(catalog_published), group_id, object_id++);
-                //return status;
+                            static_cast<int>(catalog_published),
+                            group_id,
+                            object_id++);
+                // return status;
                 break;
             }
         } catch (const std::exception& e) {
@@ -431,139 +432,55 @@ PublishChunk(std::shared_ptr<TrackPublishData> TrackPublishData,
             TrackPublishData->subgroup_id = 0;
         }
 
-        quicr::ObjectHeaders obj_headers = {
-            TrackPublishData->group_id,
-            TrackPublishData->object_id,
-            TrackPublishData->subgroup_id,
-            chunk.whole_chunk.data.size(),
-            quicr::ObjectStatus::kAvailable,
-            2 /*priority*/,
-            5000 /* ttl */,
-            std::nullopt,
-            std::nullopt
-        };
-
+        quicr::ObjectHeaders obj_headers = { TrackPublishData->group_id,
+                                             TrackPublishData->object_id,
+                                             TrackPublishData->subgroup_id,
+                                             chunk.whole_chunk.data.size(),
+                                             quicr::ObjectStatus::kAvailable,
+                                             2 /*priority*/,
+                                             5000 /* ttl */,
+                                             std::nullopt,
+                                             std::nullopt };
 
         try {
             auto status = TH->PublishObject(obj_headers, chunk.whole_chunk.data);
             switch (status) {
                 case PublishTrackHandler::PublishObjectStatus::kOk: {
                     SPDLOG_INFO("Published chunk OK, track_idx: {1}, group id: {2}, obj. id: {3}",
-                    static_cast<int>(status),
-                    TrackPublishData->track_id,
-                    TrackPublishData->group_id,
-                    TrackPublishData->object_id++);
-                    }break;
-                case PublishTrackHandler::PublishObjectStatus::kPaused:{
+                                static_cast<int>(status),
+                                TrackPublishData->track_id,
+                                TrackPublishData->group_id,
+                                TrackPublishData->object_id++);
+                } break;
+                case PublishTrackHandler::PublishObjectStatus::kPaused: {
                     SPDLOG_INFO("Publish chunk PAUSED on track_idx: {1}, group id: {2}, obj. id: {3}",
-                    static_cast<int>(status),
-                    TrackPublishData->track_id,
-                    TrackPublishData->group_id,
-                    TrackPublishData->object_id++);
-                    }break;
-                case PublishTrackHandler::PublishObjectStatus::kNoPreviousObject:{
+                                static_cast<int>(status),
+                                TrackPublishData->track_id,
+                                TrackPublishData->group_id,
+                                TrackPublishData->object_id++);
+                } break;
+                case PublishTrackHandler::PublishObjectStatus::kNoPreviousObject: {
                     SPDLOG_INFO("Publish problem, no prevoius objects on track_idx: {1}, group id: {2}, obj. id: {3}",
-                    static_cast<int>(status),
-                    TrackPublishData->track_id,
-                    TrackPublishData->group_id,
-                    TrackPublishData->object_id++);
-                }break;
-                case PublishTrackHandler::PublishObjectStatus::kNoSubscribers:{
+                                static_cast<int>(status),
+                                TrackPublishData->track_id,
+                                TrackPublishData->group_id,
+                                TrackPublishData->object_id++);
+                } break;
+                case PublishTrackHandler::PublishObjectStatus::kNoSubscribers: {
                     SPDLOG_INFO("Publish problem, no prevoius objects on track_idx: {1}, group id: {2}, obj. id: {3}",
-                    static_cast<int>(status),
-                    TrackPublishData->track_id,
-                    TrackPublishData->group_id,
-                    TrackPublishData->object_id++);
-                }break;
+                                static_cast<int>(status),
+                                TrackPublishData->track_id,
+                                TrackPublishData->group_id,
+                                TrackPublishData->object_id++);
+                } break;
                 default:
-                    throw std::runtime_error("PublishObject returned weird status=" + std::to_string(static_cast<int>(status)));
-                }
-            }
-        catch (const std::exception& e) {
-            SPDLOG_ERROR("Caught exception trying to publish chunk. (error={})", e.what());
-        }
-    }
-}
-
-
-/*===========================================================================*/
-// Video Publisher Thread to perform publishing
-/*===========================================================================*/
-
-void UnifiedMediaPublisher(std::shared_ptr<PublisherSharedState> shared_state, const std::atomic<bool>& stop)
-{
-{
-    while (!stop.load(std::memory_order_relaxed)) {
-        MP4Chunk chunk = shared_state->GetChunk(stop);
-        if (chunk.track_id == -1) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
-        std::shared_ptr<MyPublishTrackHandler> TH = shared_state->tracks.find(chunk.track_id)->second->Trackhandler;
-        std::shared_ptr<TrackPublishData> TrackPublishData = shared_state->tracks.find(chunk.track_id)->second;
-
-        switch (TH->GetStatus()) {
-            case MyPublishTrackHandler::Status::kOk:
-                break;
-            case MyPublishTrackHandler::Status::kNewGroupRequested:
-                // if (TrackPublishData->object_id) {
-                //     TrackPublishData->group_id++;
-                //     TrackPublishData->object_id = 0;
-                //     TrackPublishData->subgroup_id = 0;
-                // }
-                SPDLOG_INFO("New Group Requested, well then wait for a new group", TrackPublishData->group_id);
-                break;
-            case MyPublishTrackHandler::Status::kSubscriptionUpdated:
-                SPDLOG_INFO("Subscribe updated");
-                break;
-            case MyPublishTrackHandler::Status::kNoSubscribers:
-                SPDLOG_INFO("No subscribers on track id: {0}", TrackPublishData->track_id);
-                //std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                break;
-            case MyPublishTrackHandler::Status::kPaused:
-                SPDLOG_INFO("Track {} is paused", TrackPublishData->track_id);
-                //std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                continue;
-            default:
-                SPDLOG_TRACE("Publish status not ok: {0}", static_cast<int>(TH->GetStatus()));
-        }
-
-
-        if (chunk.has_keyframe) { // TrackHandler_Data->track_type == "video" &&
-            TrackPublishData->group_id++;
-            TrackPublishData->object_id = 0;
-            TrackPublishData->subgroup_id = 0;
-        }
-
-        quicr::ObjectHeaders obj_headers = {
-            TrackPublishData->group_id,
-            TrackPublishData->object_id,
-            TrackPublishData->subgroup_id,
-            chunk.whole_chunk.data.size(),
-            quicr::ObjectStatus::kAvailable,
-            2 /*priority*/,
-            5000 /* ttl */,
-            std::nullopt,
-            std::nullopt
-        };
-
-
-        try {
-            auto status = TH->PublishObject(obj_headers, chunk.whole_chunk.data);
-            if (status != decltype(status)::kOk) {
-                throw std::runtime_error("PublishObject returned status=" + std::to_string(static_cast<int>(status)));
-            } else if (status == decltype(status)::kOk) {
-                SPDLOG_INFO("Published CHUNK, rval: {0}, track_idx: {1}, group id: {2}, obj. id: {3}",
-                    static_cast<int>(status),
-                    TrackPublishData->track_id,
-                    TrackPublishData->group_id,
-                    TrackPublishData->object_id++);
+                    throw std::runtime_error("PublishObject returned weird status=" +
+                                             std::to_string(static_cast<int>(status)));
             }
         } catch (const std::exception& e) {
             SPDLOG_ERROR("Caught exception trying to publish chunk. (error={})", e.what());
         }
     }
-}
 }
 
 /*===========================================================================*/
@@ -571,42 +488,124 @@ void UnifiedMediaPublisher(std::shared_ptr<PublisherSharedState> shared_state, c
 /*===========================================================================*/
 
 void
-DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state, const std::shared_ptr<quicr::Client>& client, bool use_announce, const std::atomic<bool>& stop)
+UnifiedMediaPublisher(std::shared_ptr<PublisherSharedState> shared_state, const std::atomic<bool>& stop)
+{
+    {
+        while (!stop.load(std::memory_order_relaxed)) {
+            MP4Chunk chunk = shared_state->GetChunk(stop);
+            if (chunk.track_id == -1) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+            std::shared_ptr<MyPublishTrackHandler> TH = shared_state->tracks.find(chunk.track_id)->second->Trackhandler;
+            std::shared_ptr<TrackPublishData> TrackPublishData = shared_state->tracks.find(chunk.track_id)->second;
+
+            switch (TH->GetStatus()) {
+                case MyPublishTrackHandler::Status::kOk:
+                    break;
+                case MyPublishTrackHandler::Status::kNewGroupRequested:
+                    // if (TrackPublishData->object_id) {
+                    //     TrackPublishData->group_id++;
+                    //     TrackPublishData->object_id = 0;
+                    //     TrackPublishData->subgroup_id = 0;
+                    // }
+                    SPDLOG_INFO("New Group Requested, well then wait for a new group", TrackPublishData->group_id);
+                    break;
+                case MyPublishTrackHandler::Status::kSubscriptionUpdated:
+                    SPDLOG_INFO("Subscribe updated");
+                    break;
+                case MyPublishTrackHandler::Status::kNoSubscribers:
+                    SPDLOG_INFO("No subscribers on track id: {0}", TrackPublishData->track_id);
+                    // std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    break;
+                case MyPublishTrackHandler::Status::kPaused:
+                    SPDLOG_INFO("Track {} is paused", TrackPublishData->track_id);
+                    // std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+                    continue;
+                default:
+                    SPDLOG_TRACE("Publish status not ok: {0}", static_cast<int>(TH->GetStatus()));
+            }
+
+            if (chunk.has_keyframe) { // TrackHandler_Data->track_type == "video" &&
+                TrackPublishData->group_id++;
+                TrackPublishData->object_id = 0;
+                TrackPublishData->subgroup_id = 0;
+            }
+
+            quicr::ObjectHeaders obj_headers = { TrackPublishData->group_id,
+                                                 TrackPublishData->object_id,
+                                                 TrackPublishData->subgroup_id,
+                                                 chunk.whole_chunk.data.size(),
+                                                 quicr::ObjectStatus::kAvailable,
+                                                 2 /*priority*/,
+                                                 5000 /* ttl */,
+                                                 std::nullopt,
+                                                 std::nullopt };
+
+            try {
+                auto status = TH->PublishObject(obj_headers, chunk.whole_chunk.data);
+                if (status != decltype(status)::kOk) {
+                    throw std::runtime_error("PublishObject returned status=" +
+                                             std::to_string(static_cast<int>(status)));
+                } else if (status == decltype(status)::kOk) {
+                    SPDLOG_INFO("Published CHUNK, rval: {0}, track_idx: {1}, group id: {2}, obj. id: {3}",
+                                static_cast<int>(status),
+                                TrackPublishData->track_id,
+                                TrackPublishData->group_id,
+                                TrackPublishData->object_id++);
+                }
+            } catch (const std::exception& e) {
+                SPDLOG_ERROR("Caught exception trying to publish chunk. (error={})", e.what());
+            }
+        }
+    }
+}
+
+/*===========================================================================*/
+// Video Publisher Thread to perform publishing
+/*===========================================================================*/
+
+void
+DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
+             const std::shared_ptr<quicr::Client>& client,
+             bool use_announce,
+             const std::atomic<bool>& stop)
 {
     std::vector<std::thread> track_threads;
     std::vector<std::shared_ptr<MyPublishTrackHandler>> TrackHandlers;
 
     FfmpegCmafSplitterConfig cfg;
     cfg.io_buffer_kb = 64;
-    cfg.use_custom_stdin = false;  // <- fájlból olvasunk
+    cfg.use_custom_stdin = false; // <- fájlból olvasunk
     // ABSZOLÚT útvonal: így nem számít, honnan indítod a scriptet
     std::filesystem::path in = std::filesystem::absolute("multi_frag.mp4");
-    //SPDLOG_INFO("Opening input: {}", in.string());
-    // if (!std::filesystem::exists(in)) {
-    //     SPDLOG_ERROR("Input not found: {} ; CWD = {}", in.string(), std::filesystem::current_path().string());
-    //     return; // vagy állíts be hibajelet, hogy a controller le tudja állítani a publishert
-    // }
-    cfg.input_url = ("pipe:0"); //in.string();
+    // SPDLOG_INFO("Opening input: {}", in.string());
+    //  if (!std::filesystem::exists(in)) {
+    //      SPDLOG_ERROR("Input not found: {} ; CWD = {}", in.string(), std::filesystem::current_path().string());
+    //      return; // vagy állíts be hibajelet, hogy a controller le tudja állítani a publishert
+    //  }
+    cfg.input_url = ("pipe:0"); // in.string();
 
     // fragmentálás finomhangolás (lásd lent)
-    cfg.frag_on_key = true;          // maradhat, ha kicsi a GOP
-    cfg.frag_duration_us = 250000;   // 250 ms: gyakoribb moof-ok
+    cfg.frag_on_key = true;        // maradhat, ha kicsi a GOP
+    cfg.frag_duration_us = 250000; // 250 ms: gyakoribb moof-ok
     cfg.min_frag_duration_us = 200000;
     cfg.realtime_pace = true;
     cfg.protocol_whitelist = "file,pipe,data,crypto,subfile";
 
-
     FfmpegToMoQAdapter adapter(shared_state);
     FfmpegCmafSplitter splitter(cfg, adapter);
 
-    //lambda that calls the adapters on_init with the signature required
+    // lambda that calls the adapters on_init with the signature required
 
     std::thread splitter_thread([&splitter, &stop]() { splitter.Run(stop); });
 
     fprintf(stderr, "[PUB-DEBUG] >>> DoPublisher2: Splitter thread started. Now waiting for catalog...\n");
 
     shared_state->WaitForCatalogReady(stop);
-    fprintf(stderr, "[PUB-DEBUG] >>> DoPublisher2: Wait for catalog finished. Catalog ready: %d\n", shared_state->catalog_ready);
+    fprintf(stderr,
+            "[PUB-DEBUG] >>> DoPublisher2: Wait for catalog finished. Catalog ready: %d\n",
+            shared_state->catalog_ready);
 
     if (shared_state->catalog_ready == false) {
         moq_example::terminate = true;
@@ -621,10 +620,10 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state, const std::shar
         return;
     }
     {
-        quicr::FullTrackName full_track_name = quicr::example::MakeFullTrackName(shared_state->catalog.namespace_, "catalog");
+        quicr::FullTrackName full_track_name =
+          quicr::example::MakeFullTrackName(shared_state->catalog.namespace_, "catalog");
 
-        auto th = std::make_shared<MyPublishTrackHandler>(
-        full_track_name, quicr::TrackMode::kStream, 1, 3000);
+        auto th = std::make_shared<MyPublishTrackHandler>(full_track_name, quicr::TrackMode::kStream, 1, 3000);
         TrackHandlers.push_back(th);
         th->SetUseAnnounce(true);
         th->SetTrackAlias(0);
@@ -635,10 +634,10 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state, const std::shar
     }
     for (CatalogTrackEntry track : shared_state->catalog.tracks()) {
 
-        quicr::FullTrackName full_track_name = quicr::example::MakeFullTrackName(shared_state->catalog.namespace_, track.name);
+        quicr::FullTrackName full_track_name =
+          quicr::example::MakeFullTrackName(shared_state->catalog.namespace_, track.name);
 
-        auto th = std::make_shared<MyPublishTrackHandler>(
-            full_track_name, quicr::TrackMode::kStream, 2, 3000);
+        auto th = std::make_shared<MyPublishTrackHandler>(full_track_name, quicr::TrackMode::kStream, 2, 3000);
         TrackHandlers.push_back(th);
         th->SetUseAnnounce(false);
         th->SetTrackAlias(track.idx);
@@ -649,7 +648,8 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state, const std::shar
         {
             std::lock_guard<std::mutex> lk(shared_state->s_mtx);
             auto it = shared_state->tracks.find(track.idx);
-            if (it != shared_state->tracks.end()) tpd = it->second;
+            if (it != shared_state->tracks.end())
+                tpd = it->second;
         }
         if (!tpd) {
             SPDLOG_ERROR("No TrackPublishData for catalog idx={} (skipping thread)", track.idx);
@@ -660,13 +660,15 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state, const std::shar
         std::thread track_thread(PublishChunk, std::ref(tpd), th, std::ref(stop));
         track_threads.push_back(std::move(track_thread));
     }
-    //std::thread publisher_thread(UnifiedMediaPublisher, shared_state, std::cref(stop));
+    // std::thread publisher_thread(UnifiedMediaPublisher, shared_state, std::cref(stop));
 
     while (!stop.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     }
 
-    if (splitter_thread.joinable()){splitter_thread.join();}
+    if (splitter_thread.joinable()) {
+        splitter_thread.join();
+    }
 
     for (auto val : shared_state->tracks | std::views::values) {
         val->cv.notify_one();
@@ -674,7 +676,7 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state, const std::shar
     for (auto& t : track_threads) {
         try {
             t.join();
-        } catch (...){
+        } catch (...) {
             SPDLOG_WARN("Exception while joining a track thread (ignored)");
         }
     }
@@ -702,7 +704,8 @@ struct SubTrackHandlerStruct
 };
 
 // ---- Video track toggle helpers ----
-struct VideoToggleContext {
+struct VideoToggleContext
+{
     std::vector<std::string> video_names; // pl. {"video1","video2"}
     std::unordered_map<std::string, std::shared_ptr<MySubscribeTrackHandler>> handler_by_name;
     int active_idx = -1; // melyik video aktív
@@ -710,10 +713,9 @@ struct VideoToggleContext {
 
 static VideoToggleContext s_vctx;
 static std::mutex s_vctx_mu;
-static std::atomic<bool> s_toggle_requested{false};
-static std::atomic<bool> s_keyloop_running{false};
+static std::atomic<bool> s_toggle_requested{ false };
+static std::atomic<bool> s_keyloop_running{ false };
 static std::thread s_keyloop;
-
 
 /*===========================================================================*/
 // Subscriber thread to perform subscribe
@@ -729,23 +731,23 @@ DoSubscriber(const std::string& track_namespace,
 {
     using Fetch = quicr::SubscribeTrackHandler::JoiningFetch;
     const auto joining_fetch = join_fetch.has_value()
-        ? Fetch{ 4, quicr::messages::GroupOrder::kAscending, {}, *join_fetch, absolute }
-    : std::optional<Fetch>(std::nullopt);
+                                 ? Fetch{ 4, quicr::messages::GroupOrder::kAscending, {}, *join_fetch, absolute }
+                                 : std::optional<Fetch>(std::nullopt);
 
     std::vector<SubTrackHandlerStruct> sub_track_handlers; // itt TOVÁBBRA IS csak non-video-k legyenek
 
     static VideoToggleContext s_vctx;
-    static std::atomic_bool   s_keyloop_running{false};
-    static std::thread        s_keyloop;
-    static std::atomic_bool   s_toggle_requested{false};
-    static std::mutex         s_vctx_mu;
+    static std::atomic_bool s_keyloop_running{ false };
+    static std::thread s_keyloop;
+    static std::atomic_bool s_toggle_requested{ false };
+    static std::mutex s_vctx_mu;
 
     auto sub_util = std::make_shared<SubscriberUtil>();
 
     // 1) KATALÓGUS FELIRATKOZÁS
     auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace, "catalog");
-    const auto catalog_track_handler =
-        std::make_shared<MySubscribeTrackHandler>(catalog_full_track_name, messages::FilterType::kLargestObject, joining_fetch, true);
+    const auto catalog_track_handler = std::make_shared<MySubscribeTrackHandler>(
+      catalog_full_track_name, messages::FilterType::kLargestObject, joining_fetch, true);
     catalog_track_handler->InitCatalogTrack(sub_util);
 
     SPDLOG_INFO("Started subscriber");
@@ -767,11 +769,11 @@ DoSubscriber(const std::string& track_namespace,
     while (!stop && sub_util->catalog_read == false) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         SPDLOG_INFO("Waiting for catalog to be ready");
-        if (moq_example::terminate) break;
+        if (moq_example::terminate)
+            break;
     }
 
     GstInitOnce();
-
 
     // 3) Feliratkozás trackekre: non-video azonnal; video csak EGY kezdetben
     if (!stop && sub_util->subscribed == false) {
@@ -786,15 +788,19 @@ DoSubscriber(const std::string& track_namespace,
         }
 
         GstOnCatalog(sub_util->catalog.tracks());
-        //g_gst->SetPlaying();
+        // g_gst->SetPlaying();
 
         for (auto track : sub_util->catalog.tracks()) {
             auto subtrack = std::make_shared<SubTrack>();
             subtrack->track_entry = track;
-            subtrack->namespace_  = track_namespace;
-            subtrack->init        = base64::decode_to_uint8_vec(track.b64_init_data_);
+            subtrack->namespace_ = track_namespace;
+            subtrack->init = base64::decode_to_uint8_vec(track.b64_init_data_);
 
-            auto track_handler   = std::make_shared<MySubscribeTrackHandler>(quicr::example::MakeFullTrackName(track_namespace, track.name), quicr::messages::FilterType::kNextGroupStart, joining_fetch, false);
+            auto track_handler =
+              std::make_shared<MySubscribeTrackHandler>(quicr::example::MakeFullTrackName(track_namespace, track.name),
+                                                        quicr::messages::FilterType::kNextGroupStart,
+                                                        joining_fetch,
+                                                        false);
             track_handler->SetSubscribeGst(g_gst);
             track_handler->InitMediaTrack(subtrack);
 
@@ -805,18 +811,19 @@ DoSubscriber(const std::string& track_namespace,
                 std::lock_guard<std::mutex> lk(s_vctx_mu);
                 if (!s_vctx.handler_by_name.count(track.name)) {
                     s_vctx.handler_by_name[track.name] = track_handler;
-                    if (std::find(s_vctx.video_names.begin(), s_vctx.video_names.end(), track.name) == s_vctx.video_names.end()) {
+                    if (std::find(s_vctx.video_names.begin(), s_vctx.video_names.end(), track.name) ==
+                        s_vctx.video_names.end()) {
                         s_vctx.video_names.push_back(track.name);
-                        //cg_gst->PushInit(track.name, init_data, subtrack->init.size());
+                        // cg_gst->PushInit(track.name, init_data, subtrack->init.size());
                     }
                 }
             }
             // 3) Nem-videók: itt azonnal feliratkozhatsz, ha eddig is így volt
             if (track.type != "video") {
 
-                SPDLOG_INFO("trackname: {},init size: {}",track.name , subtrack->init.size());
+                SPDLOG_INFO("trackname: {},init size: {}", track.name, subtrack->init.size());
 
-                //g_gst->PushInit(track.name, init_data, subtrack->init.size());
+                // g_gst->PushInit(track.name, init_data, subtrack->init.size());
                 g_gst->StartPipelines(GST_STATE_PLAYING);
 
                 GstSelectAudio(track.name);
@@ -840,8 +847,8 @@ DoSubscriber(const std::string& track_namespace,
                     auto subtrack_it = sub_util->sub_tracks.find(it->second);
                     if (subtrack_it != sub_util->sub_tracks.end()) {
                         auto& subtrack = subtrack_it->second;
-                        SPDLOG_INFO("trackname: {},init size: {}",it->first , subtrack->init.size());
-                        //g_gst->PushInit(it->first, subtrack->init.data(), subtrack->init.size());
+                        SPDLOG_INFO("trackname: {},init size: {}", it->first, subtrack->init.size());
+                        // g_gst->PushInit(it->first, subtrack->init.data(), subtrack->init.size());
                         g_gst->StartPipelines(GST_STATE_PLAYING);
                         GstSelectVideo(it->first);
                     }
@@ -855,10 +862,10 @@ DoSubscriber(const std::string& track_namespace,
             }
         }
 
-
         // Billentyűfigyelő szál: CSAK jelez (flag), nem hív Client-et!
         if (!s_keyloop_running.exchange(true)) {
-            if (s_keyloop.joinable()) s_keyloop.join();
+            if (s_keyloop.joinable())
+                s_keyloop.join();
             s_keyloop = std::thread([]() {
                 int tty_fd = open("/dev/tty", O_RDONLY | O_NONBLOCK);
                 if (tty_fd >= 0) {
@@ -888,7 +895,8 @@ DoSubscriber(const std::string& track_namespace,
 
                 // Fallback: STDIN non-blocking
                 int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
-                if (flags != -1) fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+                if (flags != -1)
+                    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
                 fprintf(stderr, "[toggle] /dev/tty not available; falling back to STDIN.\n");
 
                 while (s_keyloop_running.load(std::memory_order_relaxed)) {
@@ -923,12 +931,14 @@ DoSubscriber(const std::string& track_namespace,
                 if (s_vctx.video_names.size() >= 2 && s_vctx.active_idx >= 0) {
                     cur = s_vctx.video_names[s_vctx.active_idx];
                     auto cur_it = s_vctx.handler_by_name.find(cur);
-                    if (cur_it != s_vctx.handler_by_name.end()) cur_h = cur_it->second;
+                    if (cur_it != s_vctx.handler_by_name.end())
+                        cur_h = cur_it->second;
 
                     s_vctx.active_idx = (s_vctx.active_idx + 1) % (int)s_vctx.video_names.size();
                     next = s_vctx.video_names[s_vctx.active_idx];
                     auto next_it = s_vctx.handler_by_name.find(next);
-                    if (next_it != s_vctx.handler_by_name.end()) next_h = next_it->second;
+                    if (next_it != s_vctx.handler_by_name.end())
+                        next_h = next_it->second;
                 } else {
                     SPDLOG_WARN("[toggle] Not enough VIDEO tracks to toggle.");
                 }
@@ -937,23 +947,29 @@ DoSubscriber(const std::string& track_namespace,
             // Fontos: a Client hívásokat NE a keyloop szálban végezzük!
             if (cur_h && next_h) {
                 uint64_t group = cur_h->GetCurrentGroup();
-                next_h->SetWaitForGroup(group+1); // váltáskor új group-tól játsszon
-                try { client->SubscribeTrack(next_h); } catch (...) {}
+                next_h->SetWaitForGroup(group + 1); // váltáskor új group-tól játsszon
+                try {
+                    client->SubscribeTrack(next_h);
+                } catch (...) {
+                }
                 std::shared_ptr<std::atomic_bool> unsub = std::make_shared<std::atomic_bool>(false);
                 cur_h->StopAtNewGroup(unsub);
                 unsub->wait(false);
-                try { client->UnsubscribeTrack(cur_h); } catch (...) {}
+                try {
+                    client->UnsubscribeTrack(cur_h);
+                } catch (...) {
+                }
                 cur_h->SetWaitForGroup();
             }
         }
-
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     // 5) LEZÁRÁS: keyloop leállítás, unsubscribe
     s_keyloop_running = false;
-    if (s_keyloop.joinable()) s_keyloop.join();
+    if (s_keyloop.joinable())
+        s_keyloop.join();
 
     // catalog le
     client->UnsubscribeTrack(catalog_track_handler);
@@ -968,7 +984,10 @@ DoSubscriber(const std::string& track_namespace,
         std::lock_guard<std::mutex> lk(s_vctx_mu);
         for (auto& kv : s_vctx.handler_by_name) {
             if (kv.second) {
-                try { client->UnsubscribeTrack(kv.second); } catch (...) {}
+                try {
+                    client->UnsubscribeTrack(kv.second);
+                } catch (...) {
+                }
             }
         }
         s_vctx.handler_by_name.clear();
@@ -980,7 +999,6 @@ DoSubscriber(const std::string& track_namespace,
     SPDLOG_INFO("Subscriber done track");
     moq_example::terminate = true;
 }
-
 
 /*===========================================================================*/
 // Fetch thread to perform fetch
@@ -1148,7 +1166,7 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
 int
 main(int argc, char* argv[])
 {
-    //Initialize logger inside a function
+    // Initialize logger inside a function
     logger = spdlog::stderr_color_mt("err_logger");
     spdlog::set_default_logger(logger);
 
@@ -1256,29 +1274,29 @@ main(int argc, char* argv[])
             auto th = quicr::TrackHash(prefix_ns);
 
             SPDLOG_INFO("Sending subscribe announces for prefix '{}' namespace_hash: {}",
-                         result["sub_announces"].as<std::string>(),
-                         th.track_namespace_hash);
+                        result["sub_announces"].as<std::string>(),
+                        th.track_namespace_hash);
 
             client->SubscribeAnnounces(prefix_ns.name_space);
         }
 
         if (enable_pub) {
-            if (!qclient_vars::video){
+            if (!qclient_vars::video) {
                 SPDLOG_INFO("Not today...");
             } else {
                 auto shared_state = std::make_shared<PublisherSharedState>();
 
                 bool stop_parse{ false };
 
-                //parse_thread = std::thread(DoParse, shared_state, std::ref(stop_parse));
+                // parse_thread = std::thread(DoParse, shared_state, std::ref(stop_parse));
 
-                //shared_state->WaitForCatalogReady(stop_threads);
+                // shared_state->WaitForCatalogReady(stop_threads);
 
-                if (result["pub_namespace"].as<std::string>() != "" ) {
+                if (result["pub_namespace"].as<std::string>() != "") {
                     shared_state->catalog.namespace_ = result["pub_namespace"].as<std::string>();
                 } else {
-                        SPDLOG_ERROR("No namespace specified for video publishing");
-                        return EXIT_FAILURE;
+                    SPDLOG_ERROR("No namespace specified for video publishing");
+                    return EXIT_FAILURE;
                 }
 
                 pub_thread = std::thread(DoPublisher2, shared_state, client, use_announce, stop_threads);
@@ -1305,8 +1323,13 @@ main(int argc, char* argv[])
                 client->RequestTrackStatus(sub_track_name);
             }
 
-            sub_thread = std::thread(
-              DoSubscriber, result["sub_namespace"].as<std::string>(), client, filter_type, std::ref(stop_threads), joining_fetch, absolute);
+            sub_thread = std::thread(DoSubscriber,
+                                     result["sub_namespace"].as<std::string>(),
+                                     client,
+                                     filter_type,
+                                     std::ref(stop_threads),
+                                     joining_fetch,
+                                     absolute);
         }
         if (enable_fetch) {
             const auto& fetch_track_name = quicr::example::MakeFullTrackName(
