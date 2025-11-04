@@ -58,5 +58,4 @@ class MyPublishTrackHandler : public quicr::PublishTrackHandler
     }
 };
 
-
 #endif // QUICR_MYPUBLISHTRACKHANDLER_H

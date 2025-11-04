@@ -4,7 +4,6 @@
 
 #pragma once
 
-
 #include <array>
 #include <cstdint>
 #include <stdexcept>
@@ -17,7 +16,7 @@
 namespace base64 {
     // From https://gist.github.com/williamdes/308b95ac9ef1ee89ae0143529c361d37;
 
-    inline constexpr std::string_view kValues = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";//=
+    inline constexpr std::string_view kValues = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; //=
     static std::string Encode(const std::string& in)
     {
         std::string out;
@@ -74,15 +73,16 @@ namespace base64 {
         return out;
     }
 
-    inline std::string Encode(const std::vector<uint8_t>& in) {
+    inline std::string Encode(const std::vector<uint8_t>& in)
+    {
         std::string out;
         out.reserve(((in.size() + 2) / 3) * 4);
         size_t i = 0;
         while (i + 3 <= in.size()) {
-            uint32_t v = (in[i] << 16) | (in[i+1] << 8) | in[i+2];
+            uint32_t v = (in[i] << 16) | (in[i + 1] << 8) | in[i + 2];
             out.push_back(kValues[(v >> 18) & 0x3F]);
             out.push_back(kValues[(v >> 12) & 0x3F]);
-            out.push_back(kValues[(v >> 6)  & 0x3F]);
+            out.push_back(kValues[(v >> 6) & 0x3F]);
             out.push_back(kValues[v & 0x3F]);
             i += 3;
         }
@@ -93,17 +93,18 @@ namespace base64 {
             out.push_back('=');
             out.push_back('=');
         } else if (i + 2 == in.size()) {
-            uint32_t v = (in[i] << 16) | (in[i+1] << 8);
+            uint32_t v = (in[i] << 16) | (in[i + 1] << 8);
             out.push_back(kValues[(v >> 18) & 0x3F]);
             out.push_back(kValues[(v >> 12) & 0x3F]);
-            out.push_back(kValues[(v >> 6)  & 0x3F]);
+            out.push_back(kValues[(v >> 6) & 0x3F]);
             out.push_back('=');
         }
         return out;
     }
 
     // Dekód táblázat (standard, + és / jelekhez)
-    inline const std::array<int8_t, 256>& decode_table() {
+    inline const std::array<int8_t, 256>& decode_table()
+    {
         static std::array<int8_t, 256> D{};
         static bool init = false;
         if (!init) {
@@ -117,7 +118,8 @@ namespace base64 {
     }
 
     // Robusztus dekóder: kezel URL-safe-et, whitespace-et, data URI prefixet, paddinget
-    inline std::vector<uint8_t> decode_to_uint8_vec(std::string_view in) {
+    inline std::vector<uint8_t> decode_to_uint8_vec(std::string_view in)
+    {
         // 1) Ha data: URI, vágjuk le az előtagot a vesszőig
         if (in.rfind("data:", 0) == 0) {
             const size_t comma = in.find(',');
@@ -135,23 +137,33 @@ namespace base64 {
         for (size_t i = 0; i < in.size(); ++i) {
             unsigned char c = static_cast<unsigned char>(in[i]);
 
-            if (std::isspace(c)) continue;           // minden ASCII whitespace törlése
+            if (std::isspace(c))
+                continue; // minden ASCII whitespace törlése
 
-            if (c == '-') { norm.push_back('+'); saw_urlsafe = true; continue; }
-            if (c == '_') { norm.push_back('/'); saw_urlsafe = true; continue; }
+            if (c == '-') {
+                norm.push_back('+');
+                saw_urlsafe = true;
+                continue;
+            }
+            if (c == '_') {
+                norm.push_back('/');
+                saw_urlsafe = true;
+                continue;
+            }
 
             // Megengedett karakterek: A-Z a-z 0-9 + / =
-            if ((c >= 'A' && c <= 'Z') ||
-                (c >= 'a' && c <= 'z') ||
-                (c >= '0' && c <= '9') ||
-                c == '+' || c == '/' || c == '=') {
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' ||
+                c == '=') {
                 norm.push_back(static_cast<char>(c));
             } else {
                 // Adjunk értelmes hibát pozícióval és kóddal
                 char msg[128];
-                std::snprintf(msg, sizeof(msg),
+                std::snprintf(msg,
+                              sizeof(msg),
                               "base64: invalid character at pos %zu: 0x%02X ('%c')",
-                              i, c, (c >= 32 && c < 127 ? c : '.'));
+                              i,
+                              c,
+                              (c >= 32 && c < 127 ? c : '.'));
                 throw std::invalid_argument(msg);
             }
         }
@@ -180,9 +192,8 @@ namespace base64 {
             if (d < 0) {
                 // Ez elvileg nem fordulhat elő a fenti szűrés után
                 char msg[128];
-                std::snprintf(msg, sizeof(msg),
-                              "base64: unexpected character after normalization at pos %zu: 0x%02X",
-                              pos, c);
+                std::snprintf(
+                  msg, sizeof(msg), "base64: unexpected character after normalization at pos %zu: 0x%02X", pos, c);
                 throw std::invalid_argument(msg);
             }
             val = (val << 6) | d;

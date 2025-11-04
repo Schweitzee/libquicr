@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
 
-
 #ifndef QUICR_EXAMPLE_HELPER_FUNCTIONS_H
 #define QUICR_EXAMPLE_HELPER_FUNCTIONS_H
 
