@@ -32,7 +32,6 @@
 #include <unistd.h>
 #include <vector>
 
-#include "../qperf2/inicpp.h"
 #include "base64_tool.h"
 #include "ffmpeg_cmaf_splitter.hpp"
 #include "media.h"
@@ -46,7 +45,7 @@ using namespace quicr;
  * @brief  Subscribe track handler
  * @details Subscribe track handler used for the subscribe command line option.
  */
-class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
+class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 {
 
     bool is_catalog_;
@@ -64,7 +63,7 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
     std::shared_ptr<std::atomic_bool> unsub_;
 
   public:
-    MySubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
+    VideoSubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
                             quicr::messages::FilterType filter_type,
                             const std::optional<JoiningFetch>& joining_fetch,
                             const bool catalog = false)
@@ -112,7 +111,7 @@ class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
         stop_Group_after = -1;
     }
 
-    ~MySubscribeTrackHandler() override
+    ~VideoSubscribeTrackHandler() override
     {
         data_fs_ << std::endl;
         data_fs_.close();

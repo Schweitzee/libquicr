@@ -35,7 +35,8 @@ add_library(ffmpeg_import INTERFACE)
 target_link_libraries(ffmpeg_import INTERFACE PkgConfig::FFMPEG)
 
 add_executable(qclient client.cpp
-        subscriber_util.h)
+        subscriber_util.h
+)
 target_link_libraries(qclient PRIVATE quicr nlohmann_json::nlohmann_json)
 target_include_directories(qclient PRIVATE ../dependencies)
 
@@ -62,12 +63,10 @@ add_executable(qclient2
         ffmpeg_moq_adapter.cpp
         ffmpeg_moq_adapter.h
         subscriber_util.cpp
-        MySubscribeTrackHandler.cpp
-        MySubscribeTrackHandler.h
+        VideoSubscribeTrackHandler.h
         base64_tool.h
-        helper_functions.h
-        MyPublishTrackhandler.cpp
-        MyPublishTrackhandler.h)
+        helper_functions.h)
+
 target_link_libraries(qclient2 PRIVATE
         quicr
         nlohmann_json::nlohmann_json

@@ -16,63 +16,7 @@
 namespace base64 {
     // From https://gist.github.com/williamdes/308b95ac9ef1ee89ae0143529c361d37;
 
-    inline constexpr std::string_view kValues = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; //=
-    static std::string Encode(const std::string& in)
-    {
-        std::string out;
-
-        int val = 0;
-        int valb = -6;
-
-        for (std::uint8_t c : in) {
-            val = (val << 8) + c;
-            valb += 8;
-            while (valb >= 0) {
-                out += kValues[(val >> valb) & 0x3F];
-                valb -= 6;
-            }
-        }
-
-        if (valb > -6) {
-            out += kValues[((val << 8) >> (valb + 8)) & 0x3F];
-        }
-
-        while (out.size() % 4) {
-            out += '=';
-        }
-
-        return out;
-    }
-
-    [[maybe_unused]] static std::string Decode(const std::string& in)
-    {
-        std::string out;
-
-        std::vector<int> values(256, -1);
-        for (int i = 0; i < 64; i++) {
-            values[kValues[i]] = i;
-        }
-
-        int val = 0;
-        int valb = -8;
-
-        for (std::uint8_t c : in) {
-            if (values[c] == -1) {
-                break;
-            }
-
-            val = (val << 6) + values[c];
-            valb += 6;
-
-            if (valb >= 0) {
-                out += char((val >> valb) & 0xFF);
-                valb -= 8;
-            }
-        }
-
-        return out;
-    }
-
+    constexpr std::string_view k2Values = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; //=
     inline std::string Encode(const std::vector<uint8_t>& in)
     {
         std::string out;
@@ -80,27 +24,28 @@ namespace base64 {
         size_t i = 0;
         while (i + 3 <= in.size()) {
             uint32_t v = (in[i] << 16) | (in[i + 1] << 8) | in[i + 2];
-            out.push_back(kValues[(v >> 18) & 0x3F]);
-            out.push_back(kValues[(v >> 12) & 0x3F]);
-            out.push_back(kValues[(v >> 6) & 0x3F]);
-            out.push_back(kValues[v & 0x3F]);
+            out.push_back(k2Values[(v >> 18) & 0x3F]);
+            out.push_back(k2Values[(v >> 12) & 0x3F]);
+            out.push_back(k2Values[(v >> 6) & 0x3F]);
+            out.push_back(k2Values[v & 0x3F]);
             i += 3;
         }
         if (i + 1 == in.size()) {
             uint32_t v = (in[i] << 16);
-            out.push_back(kValues[(v >> 18) & 0x3F]);
-            out.push_back(kValues[(v >> 12) & 0x3F]);
+            out.push_back(k2Values[(v >> 18) & 0x3F]);
+            out.push_back(k2Values[(v >> 12) & 0x3F]);
             out.push_back('=');
             out.push_back('=');
         } else if (i + 2 == in.size()) {
             uint32_t v = (in[i] << 16) | (in[i + 1] << 8);
-            out.push_back(kValues[(v >> 18) & 0x3F]);
-            out.push_back(kValues[(v >> 12) & 0x3F]);
-            out.push_back(kValues[(v >> 6) & 0x3F]);
+            out.push_back(k2Values[(v >> 18) & 0x3F]);
+            out.push_back(k2Values[(v >> 12) & 0x3F]);
+            out.push_back(k2Values[(v >> 6) & 0x3F]);
             out.push_back('=');
         }
         return out;
     }
+
 
     // Dekód táblázat (standard, + és / jelekhez)
     inline const std::array<int8_t, 256>& decode_table()
@@ -110,7 +55,7 @@ namespace base64 {
         if (!init) {
             D.fill(-1);
             for (int i = 0; i < 64; ++i) {
-                D[static_cast<unsigned char>(kValues[i])] = static_cast<int8_t>(i);
+                D[static_cast<unsigned char>(k2Values[i])] = static_cast<int8_t>(i);
             }
             init = true;
         }

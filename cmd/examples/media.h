@@ -13,10 +13,11 @@
 #include <memory>
 #include <thread>
 
-#include "MyPublishTrackhandler.h"
 #include "catalog.hpp"
 #include "spdlog/fmt/bundled/chrono.h"
 #include "spdlog/spdlog.h"
+
+class VideoPublishTrackHandler;
 
 struct MP4Atom
 {
@@ -56,7 +57,7 @@ class TrackPublishData
     uint64_t object_id{ 0 };
     uint64_t subgroup_id{ 0 };
 
-    std::shared_ptr<MyPublishTrackHandler> Trackhandler{ nullptr };
+    std::shared_ptr<VideoPublishTrackHandler> Trackhandler{ nullptr };
 
     int ChunkQueueSize() const { return chunk_q.size_approx(); }
 

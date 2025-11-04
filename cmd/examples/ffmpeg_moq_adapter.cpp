@@ -4,6 +4,8 @@
 #include "base64_tool.h"
 #include <stdexcept>
 
+
+
 // --- OnInit: elmentjük az init szegmenst a shared_state-be,
 // és meghívjuk a PublishCatalog-ot ---
 
