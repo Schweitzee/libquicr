@@ -43,8 +43,6 @@
 
 #include <set>
 
-#include "helper_functions.h"
-#include "signal_handler.h"
 
 
 #include <iomanip>
@@ -561,7 +559,7 @@ PublishCatalog(Catalog& catalog, std::shared_ptr<VideoPublishTrackHandler> TH, c
                 }
                 [[fallthrough]];
             default:
-                SPDLOG_WARN("Catalog publish status not ok: {0}", static_cast<int>(TH->GetStatus()));
+                //SPDLOG_WARN("Catalog publish status not ok: {0}", static_cast<int>(TH->GetStatus()));
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
         }
@@ -585,9 +583,9 @@ PublishCatalog(Catalog& catalog, std::shared_ptr<VideoPublishTrackHandler> TH, c
         try {
             auto status = TH->PublishObject(obj_headers, catalog_bytespan);
             if (status == decltype(status)::kPaused) {
-                SPDLOG_INFO("Publish is paused");
+                //SPDLOG_INFO("Publish is paused");
             } else if (status == decltype(status)::kNoSubscribers) {
-                SPDLOG_INFO("Publish has no subscribers");
+                //SPDLOG_INFO("Publish has no subscribers");
             } else if (status != decltype(status)::kOk) {
                 throw std::runtime_error("PublishObject returned status=" + std::to_string(static_cast<int>(status)));
             } else if (status == decltype(status)::kOk) {
@@ -622,14 +620,14 @@ PublishChunk(std::shared_ptr<TrackPublishData> TrackPublishData,
                 SPDLOG_INFO("New Group Requested, well then wait for a new group", TrackPublishData->group_id);
                 break;
             case VideoPublishTrackHandler::Status::kSubscriptionUpdated:
-                SPDLOG_INFO("Subscribe updated");
+                //SPDLOG_INFO("Subscribe updated");
                 break;
             case VideoPublishTrackHandler::Status::kNoSubscribers:
-                SPDLOG_INFO("No subscribers on track id: {0}", TrackPublishData->track_id);
+                //SPDLOG_INFO("No subscribers on track id: {0}", TrackPublishData->track_id);
 
                 break;
             case VideoPublishTrackHandler::Status::kPaused:
-                SPDLOG_INFO("Track {} is paused", TrackPublishData->track_id);
+                //SPDLOG_INFO("Track {} is paused", TrackPublishData->track_id);
 
                 break;
             default:
@@ -669,11 +667,11 @@ PublishChunk(std::shared_ptr<TrackPublishData> TrackPublishData,
                                 TrackPublishData->object_id++);
                 } break;
                 case PublishTrackHandler::PublishObjectStatus::kPaused: {
-                    SPDLOG_INFO("Publish chunk PAUSED on track_idx: {1}, group id: {2}, obj. id: {3}",
-                                static_cast<int>(status),
-                                TrackPublishData->track_id,
-                                TrackPublishData->group_id,
-                                TrackPublishData->object_id++);
+                    // SPDLOG_INFO("Publish chunk PAUSED on track_idx: {1}, group id: {2}, obj. id: {3}",
+                    //             static_cast<int>(status),
+                    //             TrackPublishData->track_id,
+                    //             TrackPublishData->group_id,
+                    //             TrackPublishData->object_id++);
                 } break;
                 case PublishTrackHandler::PublishObjectStatus::kNoPreviousObject: {
                     SPDLOG_INFO("Publish problem, no prevoius objects on track_idx: {1}, group id: {2}, obj. id: {3}",
@@ -683,11 +681,11 @@ PublishChunk(std::shared_ptr<TrackPublishData> TrackPublishData,
                                 TrackPublishData->object_id++);
                 } break;
                 case PublishTrackHandler::PublishObjectStatus::kNoSubscribers: {
-                    SPDLOG_INFO("Publish problem, no prevoius objects on track_idx: {1}, group id: {2}, obj. id: {3}",
-                                static_cast<int>(status),
-                                TrackPublishData->track_id,
-                                TrackPublishData->group_id,
-                                TrackPublishData->object_id++);
+                    // SPDLOG_INFO("Publish problem, no subscribers on track_idx: {1}, group id: {2}, obj. id: {3}",
+                    //             static_cast<int>(status),
+                    //             TrackPublishData->track_id,
+                    //             TrackPublishData->group_id,
+                    //             TrackPublishData->object_id++);
                 } break;
                 default:
                     throw std::runtime_error("PublishObject returned weird status=" +
@@ -1162,20 +1160,23 @@ DoSubscriber(const std::string& track_namespace,
 
             // Fontos: a Client hívásokat NE a keyloop szálban végezzük!
             if (cur_h && next_h) {
-                uint64_t group = cur_h->GetCurrentGroup();
-                next_h->SetWaitForGroup(group + 1); // váltáskor új group-tól játsszon
+                std::shared_ptr<std::atomic_bool> start_notify = std::make_shared<std::atomic_bool>(false);
+                next_h->SetNeedInit();
+                next_h->SetStartNotify(start_notify);
+                cur_h->SetStopNotify(start_notify);
                 try {
                     client->SubscribeTrack(next_h);
                 } catch (...) {
+                    SPDLOG_ERROR("SubscribeTrack(next) failed");
                 }
-                std::shared_ptr<std::atomic_bool> unsub = std::make_shared<std::atomic_bool>(false);
-                cur_h->StopAtNewGroup(unsub);
-                unsub->wait(false);
+                start_notify->wait(false);
+
                 try {
                     client->UnsubscribeTrack(cur_h);
+                    SPDLOG_INFO("{} track unsubscribed", cur);
                 } catch (...) {
+                    SPDLOG_ERROR("UnsubscribeTrack(cur) failed");
                 }
-                cur_h->SetWaitForGroup();
             }
         }
 
@@ -1383,8 +1384,8 @@ int
 main(int argc, char* argv[])
 {
     // Initialize logger inside a function
-    logger = spdlog::stderr_color_mt("err_logger");
-    spdlog::set_default_logger(logger);
+    // logger = spdlog::stderr_color_mt("err_logger");
+    // spdlog::set_default_logger(logger);
 
     int result_code = EXIT_SUCCESS;
 

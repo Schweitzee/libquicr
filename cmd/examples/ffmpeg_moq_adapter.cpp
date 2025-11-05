@@ -41,11 +41,11 @@ FfmpegToMoQAdapter::OnInit(int stream_index, const uint8_t* init, size_t init_le
     //     }
     // }
 
-    SPDLOG_DEBUG("trying to get lock for init segment processing - {}\n", stream_index);
+    //SPDLOG_DEBUG("trying to get lock for init segment processing - {}\n", stream_index);
     {
         std::lock_guard<std::mutex> lk(shared_->s_mtx);
 
-        SPDLOG_DEBUG("Lock acquired for init segment processing - {}\n", stream_index);
+        //SPDLOG_DEBUG("Lock acquired for init segment processing - {}\n", stream_index);
 
         // Katalógus bejegyzés
         std::vector<uint8_t> init_vec(init, init + init_len);
@@ -63,7 +63,7 @@ FfmpegToMoQAdapter::OnInit(int stream_index, const uint8_t* init, size_t init_le
         fprintf(stderr, "[PUB-DEBUG] >>> Last init segment processed. Calling SetCatalogReady().\n");
         shared_->SetCatalogReady();
     }
-    SPDLOG_INFO("[PUB-DEBUG] >>> init segment processed. - {}\n", stream_index);
+    //SPDLOG_INFO("[PUB-DEBUG] >>> init segment processed. - {}\n", stream_index);
 };
 
 void
@@ -89,10 +89,10 @@ FfmpegToMoQAdapter::OnFrag(int stream_index, const uint8_t* moof, size_t moof_le
         tpd = it->second; // shared_ptr másolása zár alatt
     if (tpd) {
         tpd->PutChunk(std::move(ch));
-        SPDLOG_DEBUG("OnFrag: chunk added for stream \"{}\", (keyframe={})\n current chunks in line (aprox) {}",
-                     tpd->track_name,
-                     keyframe,
-                     tpd->ChunkQueueSize());
+        // SPDLOG_DEBUG("OnFrag: chunk added for stream \"{}\", (keyframe={})\n current chunks in line (aprox) {}",
+        //              tpd->track_name,
+        //              keyframe,
+        //              tpd->ChunkQueueSize());
     } else {
         static std::atomic<uint32_t> miss{ 0 };
         auto c = ++miss;

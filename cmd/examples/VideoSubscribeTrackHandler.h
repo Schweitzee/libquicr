@@ -55,12 +55,9 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 
     std::shared_ptr<SubscriberGst> gst_callback_;
 
-    uint64_t waitfor_Group = 0;
-
-    bool stop_at_newGroup = false;
-    uint64_t stop_Group_after = 0;
-    bool video_started_ = false;
-    std::shared_ptr<std::atomic_bool> unsub_;
+    bool need_init = false;
+    std::shared_ptr<std::atomic_bool> start_notify = nullptr;
+    std::shared_ptr<std::atomic_bool> stop_notify = nullptr;
 
   public:
     VideoSubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
@@ -72,15 +69,6 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         is_catalog_ = catalog;
     }
 
-    uint64_t GetCurrentGroup() const { return current_group_id_; }
-
-    uint64_t StopAtNewGroup(std::shared_ptr<std::atomic_bool> unsub)
-    {
-        stop_at_newGroup = true;
-        stop_Group_after = current_group_id_;
-        unsub_ = unsub;
-        return current_group_id_;
-    }
 
     void InitCatalogTrack(std::shared_ptr<SubscriberUtil> util)
     {
@@ -104,13 +92,6 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         gst_callback_ = gst;
     }
 
-    void SetWaitForGroup(uint64_t group_after = 0)
-    {
-        waitfor_Group = group_after;
-        stop_at_newGroup = false;
-        stop_Group_after = -1;
-    }
-
     ~VideoSubscribeTrackHandler() override
     {
         data_fs_ << std::endl;
@@ -118,6 +99,23 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 
         moq_fs_ << std::endl;
         moq_fs_.close();
+    }
+
+    void SetNeedInit()
+    {
+        need_init = true;
+    }
+
+    void SetStartNotify(std::shared_ptr<std::atomic_bool> start)
+    {
+        start_notify = start;
+        stop_notify = nullptr;
+    }
+
+    void SetStopNotify(std::shared_ptr<std::atomic_bool> stop)
+    {
+        stop_notify = stop;
+        start_notify = nullptr;
     }
 
     void ObjectReceived(const quicr::ObjectHeaders& hdr, quicr::BytesSpan data) override
@@ -143,64 +141,45 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
             return;
         }
 
-        if (waitfor_Group != 0 && hdr.object_id != 0) {
-            SPDLOG_INFO("Waiting for group after {0}", waitfor_Group);
-            return;
-        }
-        if (waitfor_Group != 0 && hdr.object_id == 0 && hdr.group_id < waitfor_Group) {
-            SPDLOG_INFO("Waiting for group after {0}, current group: {1}", waitfor_Group, hdr.group_id);
-            return;
-        }
-        if (waitfor_Group <= hdr.group_id && hdr.object_id == 0) {
-            waitfor_Group = 0;
-            SPDLOG_INFO("New group started for track: {0}", track_->track_entry.name);
-            if (track_->track_entry.type == "video") {
+        const bool is_video = (track_->track_entry.type == "video");
+        const bool is_audio = (track_->track_entry.type == "audio");
+        const bool is_group0 = (hdr.object_id == 0);
+
+        if (need_init && is_group0 && start_notify != nullptr) {
+            if (is_video) {
                 gst_callback_->SelectVideo(track_->track_entry.name);
             }
-            if (track_->track_entry.type == "audio") {
+            if (is_audio) {
                 gst_callback_->SelectAudio(track_->track_entry.name);
             }
-            // gst_callback_->PushInit(track_->track_entry.name, track_->init.data(), track_->init.size());
-            SPDLOG_INFO("Pushed init segment for gstream track: {0}", track_->track_entry.name);
+            start_notify->store(true, std::memory_order_release);
+            SPDLOG_INFO("Stop notify set TRUE");
+            start_notify->notify_all();
+            start_notify = nullptr;
+            need_init = false;
         }
-        if (stop_at_newGroup == true && hdr.group_id > stop_Group_after) {
-            SPDLOG_INFO("Stopping at group: {0} on track: {1}", stop_Group_after, track_->track_entry.name);
-            if (unsub_ != nullptr) {
-                unsub_->store(true);
-                unsub_->notify_all();
-                unsub_ = nullptr;
-            }
-            return;
-        }
-        if (track_->track_entry.type == "video") {
-            if (!video_started_) {
-                // addig dobjuk, amíg nem jön el egy group 0. object-je
-                if (hdr.object_id != 0) {
-                    return;
-                }
-                video_started_ = true;
+
+        if (stop_notify != nullptr) {
+            if (stop_notify->load(std::memory_order_acquire) == true) {
+                SPDLOG_INFO("Dropped fragment during track change");
+                return;
             }
         }
 
-        if (track_->track_entry.type == "video") {
-            gst_callback_->VideoPushFragment(data.data(), data.size(), hdr.object_id == 0);
-        }
-        if (track_->track_entry.type == "audio") {
-            gst_callback_->AudioPushFragment(data.data(), data.size(), hdr.object_id == 0);
+        if (is_video) {
+            gst_callback_->VideoPushFragment(data.data(), data.size(), is_group0);
+        } else if (is_audio) {
+            gst_callback_->AudioPushFragment(data.data(), data.size(), is_group0);
         }
 
         {
             std::ofstream out(track_->track_entry.name + ".txt", std::ios::app);
-            out << "group: " << hdr.group_id << ", object: " << hdr.object_id << ", data size:" << std::endl
-                << data.size() << std::endl;
+            out << "group: " << hdr.group_id << ", object: " << hdr.object_id
+                << ", data size:\n" << data.size() << std::endl;
         }
 
-        SPDLOG_INFO("Pushed fragment for gstream track: {0}, Group:{1}, Object:{2}",
-                    track_->track_entry.name,
-                    hdr.group_id,
-                    hdr.object_id);
-        // std::cout << "Fragment received on "  << track_->track_entry.name << ", group: " << hdr.group_id << ",
-        // object: " << hdr.object_id << std::endl;
+        SPDLOG_INFO("Pushed fragment for gstream track: {}, Group:{}, Object:{}",
+                    track_->track_entry.name, hdr.group_id, hdr.object_id);
     }
 
     void StatusChanged(Status status) override
