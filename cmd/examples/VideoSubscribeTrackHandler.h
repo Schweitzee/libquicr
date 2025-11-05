@@ -115,11 +115,18 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
     void SetStopNotify(std::shared_ptr<std::atomic_bool> stop)
     {
         stop_notify = stop;
-        start_notify = nullptr;
+        //start_notify = nullptr;
     }
 
     void ObjectReceived(const quicr::ObjectHeaders& hdr, quicr::BytesSpan data) override
     {
+        if (stop_notify != nullptr) {
+            if (stop_notify->load(std::memory_order_acquire) == true) {
+                SPDLOG_INFO("Dropped fragment during track change");
+                return;
+            }
+        }
+
         std::string s(reinterpret_cast<const char*>(GetFullTrackName().name.data()), GetFullTrackName().name.size());
         // SPDLOG_INFO("Received message on {0}: Group:{1}, Object:{2}", s, hdr.group_id, hdr.object_id);
 
@@ -146,17 +153,22 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         const bool is_group0 = (hdr.object_id == 0);
 
         if (need_init && is_group0 && start_notify != nullptr) {
+            start_notify->store(true, std::memory_order_release);
+            SPDLOG_INFO("Stop notify set TRUE");
+            start_notify->notify_all();
+            start_notify = nullptr;
+            need_init = false;
             if (is_video) {
                 gst_callback_->SelectVideo(track_->track_entry.name);
             }
             if (is_audio) {
                 gst_callback_->SelectAudio(track_->track_entry.name);
             }
-            start_notify->store(true, std::memory_order_release);
-            SPDLOG_INFO("Stop notify set TRUE");
-            start_notify->notify_all();
-            start_notify = nullptr;
-            need_init = false;
+            SPDLOG_INFO("TRACK CHANGED-------------");
+        }
+        if (need_init && is_group0 == false) {
+            SPDLOG_INFO("Dropped fragment during track change");
+            return;
         }
 
         if (stop_notify != nullptr) {
