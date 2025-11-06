@@ -6,9 +6,39 @@ include(FetchContent)
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
 FetchContent_MakeAvailable(json)
 
-add_executable(qclient client.cpp)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GSTREAMER REQUIRED IMPORTED_TARGET
+        gstreamer-1.0>=1.18
+        gstreamer-app-1.0
+        gstreamer-video-1.0
+        gstreamer-audio-1.0
+        gobject-2.0
+        glib-2.0
+        gstreamer-1.0 gstreamer-app-1.0 gstreamer-pbutils-1.0
+)
+add_library(gstreamer_import INTERFACE)
+target_link_libraries(gstreamer_import INTERFACE PkgConfig::GSTREAMER)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG IMPORTED_TARGET
+        libavformat
+        libavcodec
+        libavutil
+)
+if (NOT FFMPEG_FOUND)
+        message(FATAL_ERROR
+                "System FFmpeg nem található (pkg-config). "
+                "Állítsd USE_SYSTEM_FFMPEG=OFF-ra, hogy a dependencies/ffmpeg forrásból épüljön.")
+endif()
+
+add_library(ffmpeg_import INTERFACE)
+target_link_libraries(ffmpeg_import INTERFACE PkgConfig::FFMPEG)
+
+add_executable(qclient client.cpp
+        subscriber_util.h
+)
 target_link_libraries(qclient PRIVATE quicr nlohmann_json::nlohmann_json)
-target_include_directories(qclient PRIVATE ../dependencies )
+target_include_directories(qclient PRIVATE ../dependencies)
 
 target_compile_options(qclient
         PRIVATE
@@ -22,6 +52,45 @@ set_target_properties(qclient
         CXX_EXTENSIONS OFF)
 
 target_compile_definitions(qclient PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+
+add_executable(qclient2
+        client2.cpp
+        media.h
+        media.cpp
+        catalog.hpp
+        ffmpeg_cmaf_splitter.cpp
+        ffmpeg_cmaf_splitter.hpp
+        ffmpeg_moq_adapter.cpp
+        ffmpeg_moq_adapter.h
+        subscriber_util.cpp
+        VideoSubscribeTrackHandler.h
+        base64_tool.h
+        helper_functions.h)
+
+target_link_libraries(qclient2 PRIVATE
+        quicr
+        nlohmann_json::nlohmann_json
+        ffmpeg_import
+        gstreamer_import)
+
+target_include_directories(qclient2 PRIVATE
+        ../dependencies
+        ${FFMPEG_INSTALL_DIR}/include
+        ${CMAKE_SOURCE_DIR}/dependencies/concurrentqueue   # itt van a concurrentqueue.h
+        ${CMAKE_SOURCE_DIR}/dependencies)
+
+target_compile_options(qclient2
+        PRIVATE
+        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>: -Wpedantic -Wextra -Wall>
+        $<$<CXX_COMPILER_ID:MSVC>: >)
+
+set_target_properties(qclient2
+        PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS OFF)
+
+target_compile_definitions(qclient2 PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
 
 add_executable(qserver
         server.cpp
@@ -46,4 +115,5 @@ if(LINT)
         include(Lint)
         Lint(qserver)
         Lint(qclient)
+        Lint(qclient2)
 endif()
