@@ -2,8 +2,8 @@
 // Created by schweitzer on 2025. 10. 18..
 //
 
-#ifndef QUICR_MYSUBSCRIBETRACKHANDLER_H
-#define QUICR_MYSUBSCRIBETRACKHANDLER_H
+#ifndef QUICR_VIDEOSUBSCRIBETRACKHANDLER_H
+#define QUICR_VIDEOSUBSCRIBETRACKHANDLER_H
 
 #pragma once
 #include <nlohmann/json.hpp>
@@ -48,9 +48,6 @@ using namespace quicr;
 class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 {
 
-    bool is_catalog_;
-    std::shared_ptr<SubscriberUtil>
-      util_;                          // either util or track has to be set for InitCatalogTrack if "catalog == true"
     std::shared_ptr<SubTrack> track_; // this has to be set with InitMediaTrack for media tracks if "catalog == false"
 
     std::shared_ptr<SubscriberGst> gst_callback_;
@@ -63,28 +60,17 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
     VideoSubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
                             quicr::messages::FilterType filter_type,
                             const std::optional<JoiningFetch>& joining_fetch,
-                            const bool catalog = false)
-      : SubscribeTrackHandler(full_track_name, 3, quicr::messages::GroupOrder::kAscending, filter_type, joining_fetch)
+                            std::shared_ptr<SubTrack> track,
+                            bool publisher_initiated = false)
+      : SubscribeTrackHandler(full_track_name,
+                              3,
+                              quicr::messages::GroupOrder::kAscending,
+                              filter_type,
+                              joining_fetch,
+                              publisher_initiated)
     {
-        is_catalog_ = catalog;
     }
 
-
-    void InitCatalogTrack(std::shared_ptr<SubscriberUtil> util)
-    {
-        if (is_catalog_ == false) {
-            throw std::runtime_error("InitCatalogTrack called on non-catalog track");
-        }
-        util_ = util;
-    }
-
-    void InitMediaTrack(std::shared_ptr<SubTrack> track)
-    {
-        if (is_catalog_ == true) {
-            throw std::runtime_error("InitMediaTrack called on catalog track");
-        }
-        track_ = track;
-    }
 
     void SetSubscribeGst(const std::shared_ptr<SubscriberGst>& gst)
     {
@@ -130,23 +116,6 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         std::string s(reinterpret_cast<const char*>(GetFullTrackName().name.data()), GetFullTrackName().name.size());
         // SPDLOG_INFO("Received message on {0}: Group:{1}, Object:{2}", s, hdr.group_id, hdr.object_id);
 
-        if (is_catalog_) {
-            // Parse catalog and print to stdout
-            try {
-                std::string catalog_str(data.begin(), data.end());
-                std::cerr << catalog_str << std::endl;
-                Catalog catalog;
-                catalog.from_json(catalog_str);
-
-                SPDLOG_INFO("Catalog read with {0} tracks", catalog.tracks().size());
-                util_->catalog = std::move(catalog);
-                util_->catalog_read = true;
-            } catch (const std::exception& e) {
-                SPDLOG_ERROR("Failed to parse catalog JSON: {0}", e.what());
-                std::cerr << fmt::format("Failed to parse catalog JSON: {0}", e.what()) << std::endl;
-            }
-            return;
-        }
 
         const bool is_video = (track_->track_entry.type == "video");
         const bool is_audio = (track_->track_entry.type == "audio");
