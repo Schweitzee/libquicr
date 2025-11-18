@@ -50,8 +50,17 @@ FfmpegToMoQAdapter::OnInit(int stream_index, const uint8_t* init, size_t init_le
         // Katalógus bejegyzés
         std::vector<uint8_t> init_vec(init, init + init_len);
         track.init_binary_size = init_len;
-        track.b64_init_data_ = base64::Encode(init_vec);
-        shared_->catalog.addTrackEntry(std::move(track)); // move nem kötelező, másolás is ok
+        track.b64_init_data = base64::Encode(init_vec);
+
+        if (track.type == "video") {
+            shared_->catalog.add_video(track.name, track.idx, track.b64_init_data, track.init_binary_size,
+                                      track.width.value(), track.height.value(), track.codec.value_or(""), track.framerate.value_or(0),track.bitrate.value_or(0), track.alt_group.value_or(1) );
+            }
+
+        if (track.type == "audio") {
+            shared_->catalog.add_audio(track.name, track.idx, track.b64_init_data, track.init_binary_size,
+                                      track.language.value_or("und"), track.codec.value_or(""), track.sample_rate.value_or(0), track.channels.value_or(0), track.alt_group.value_or(2));
+        }
 
         // TrackPublishData bepakolása - *nincs* köztes nullptr
         auto [it, inserted] = shared_->tracks.try_emplace(stream_index, tpd);

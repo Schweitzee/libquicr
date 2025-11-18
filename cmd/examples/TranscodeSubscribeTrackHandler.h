@@ -48,21 +48,22 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 {
 
     std::shared_ptr<SubTrack> track_; // this has to be set with InitMediaTrack for media tracks if "catalog == false"
-    std::shared_ptr<VideoTranscodeHandler> transcode_handler;
+    std::shared_ptr<CmafTranscoderMoQ> transcode_handler_;
 
 
   public:
     TranscodeSubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
                             quicr::messages::FilterType filter_type,
                             const std::optional<JoiningFetch>& joining_fetch,
-			    std::shared_ptr<SubTrack> track
+			    std::shared_ptr<SubTrack> track,
+			    std::shared_ptr<CmafTranscoderMoQ> transcode_handler,
                             bool publisher_initiated = false)
       : SubscribeTrackHandler(full_track_name,
                               3,
                               quicr::messages::GroupOrder::kAscending,
                               filter_type,
                               joining_fetch,
-                              publisher_initiated), track_(track)
+                              publisher_initiated), track_(track), transcode_handler_(transcode_handler)
     {
     }
 
@@ -82,7 +83,9 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         // SPDLOG_INFO("Received message on {0}: Group:{1}, Object:{2}", s, hdr.group_id, hdr.object_id);
         SPDLOG_INFO("Received object on {0}: Group:{1}, Object:{2}, Size:{3} bytes", s, hdr.group_id, hdr.object_id, data.size());
 
-        transcode_handler->ProcessObject(hdr, data);
+        std::span<const uint8_t> data_span = data;
+
+        transcode_handler_->pushFragment(data_span.data(), data_span.size());
     }
 
     void StatusChanged(Status status) override

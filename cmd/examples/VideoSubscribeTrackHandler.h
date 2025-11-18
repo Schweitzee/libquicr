@@ -67,7 +67,7 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
                               quicr::messages::GroupOrder::kAscending,
                               filter_type,
                               joining_fetch,
-                              publisher_initiated)
+                              publisher_initiated), track_(track)
     {
     }
 

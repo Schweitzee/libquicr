@@ -43,8 +43,7 @@ using namespace quicr;
  */
 class CatalogSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 {
-    std::shared_ptr<SubscriberUtil>
-      util_; // either util or track has to be set for InitCatalogTrack if "catalog == true"
+    std::shared_ptr<SubscriberUtil> util_; // either util or track has to be set for InitCatalogTrack if "catalog == true"
 
   public:
     CatalogSubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
@@ -57,8 +56,7 @@ class CatalogSubscribeTrackHandler : public quicr::SubscribeTrackHandler
                               quicr::messages::GroupOrder::kAscending,
                               filter_type,
                               joining_fetch,
-                              publisher_initiated)
-      , util_(util)
+                              publisher_initiated), util_(util)
     {
     }
 

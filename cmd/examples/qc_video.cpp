@@ -40,6 +40,7 @@
 #include "ffmpeg_moq_adapter.h"
 #include "media.h"
 #include "subscriber_util.h"
+#include "CatalogSubscribeTrackHandler.h"
 
 #include <set>
 
@@ -117,10 +118,10 @@ GstOnCatalog(const std::vector<CatalogTrackEntry>& tracks)
     GstInitOnce();
     for (const auto& te : tracks) {
         if (te.type == "video") {
-            std::vector<uint8_t> init = base64::decode_to_uint8_vec(te.b64_init_data_);
+            std::vector<uint8_t> init = base64::decode_to_uint8_vec(te.b64_init_data);
             g_gst->RegisterTrackInit(te.name, true, init.data(), init.size());
         } else if (te.type == "audio") {
-            std::vector<uint8_t> init = base64::decode_to_uint8_vec(te.b64_init_data_);
+            std::vector<uint8_t> init = base64::decode_to_uint8_vec(te.b64_init_data);
             g_gst->RegisterTrackInit(te.name, false, init.data(), init.size());
         }
     }
@@ -274,6 +275,7 @@ class VideoPublishTrackHandler : public quicr::PublishTrackHandler
         return quicr::PublishTrackHandler::PublishObject(object_headers, data);
     }
 };
+
 
 /**
  * @brief MoQ client
@@ -507,6 +509,38 @@ class MyClient : public quicr::Client
         }
     }
 
+    void PublishReceived(quicr::ConnectionHandle connection_handle,
+                         uint64_t request_id,
+                         const quicr::messages::PublishAttributes& publish_attributes) override
+    {
+        auto th = quicr::TrackHash(publish_attributes.track_full_name);
+        SPDLOG_INFO(
+          "Received PUBLISH from relay for track namespace_hash: {} name_hash: {} track_hash: {} request_id: {}",
+          th.track_namespace_hash,
+          th.track_name_hash,
+          th.track_fullname_hash,
+          request_id);
+
+        // Bind publish initiated handler.
+        const auto track_handler = std::make_shared<VideoSubscribeTrackHandler>(
+          publish_attributes.track_full_name, quicr::messages::FilterType::kLargestObject, std::nullopt, nullptr); //TODO:
+        track_handler->SetRequestId(request_id);
+        track_handler->SetReceivedTrackAlias(publish_attributes.track_alias);
+        track_handler->SetPriority(publish_attributes.priority);
+        track_handler->SetDeliveryTimeout(publish_attributes.delivery_timeout);
+        track_handler->SupportNewGroupRequest(publish_attributes.new_group_request_id.has_value());
+        //SubscribeTrack(track_handler);
+
+        // Accept the PUBLISH.
+        ResolvePublish(connection_handle,
+                       request_id,
+                       publish_attributes,
+                       { .reason_code = quicr::PublishResponse::ReasonCode::kOk });
+
+        SPDLOG_INFO(
+          "Accepted PUBLISH and subscribed to track_hash: {} request_id: {}", th.track_fullname_hash, request_id);
+    }
+
   private:
     bool& stop_threads_;
 };
@@ -697,83 +731,6 @@ PublishChunk(std::shared_ptr<TrackPublishData> TrackPublishData,
     }
 }
 
-/*===========================================================================*/
-// Video Publisher Thread to perform publishing
-/*===========================================================================*/
-
-void
-UnifiedMediaPublisher(std::shared_ptr<PublisherSharedState> shared_state, const std::atomic<bool>& stop)
-{
-    {
-        while (!stop.load(std::memory_order_relaxed)) {
-            MP4Chunk chunk = shared_state->GetChunk(stop);
-            if (chunk.track_id == -1) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                continue;
-            }
-            std::shared_ptr<VideoPublishTrackHandler> TH = shared_state->tracks.find(chunk.track_id)->second->Trackhandler;
-            std::shared_ptr<TrackPublishData> TrackPublishData = shared_state->tracks.find(chunk.track_id)->second;
-
-            switch (TH->GetStatus()) {
-                case VideoPublishTrackHandler::Status::kOk:
-                    break;
-                case VideoPublishTrackHandler::Status::kNewGroupRequested:
-                    // if (TrackPublishData->object_id) {
-                    //     TrackPublishData->group_id++;
-                    //     TrackPublishData->object_id = 0;
-                    //     TrackPublishData->subgroup_id = 0;
-                    // }
-                    SPDLOG_INFO("New Group Requested, well then wait for a new group", TrackPublishData->group_id);
-                    break;
-                case VideoPublishTrackHandler::Status::kSubscriptionUpdated:
-                    SPDLOG_INFO("Subscribe updated");
-                    break;
-                case VideoPublishTrackHandler::Status::kNoSubscribers:
-                    SPDLOG_INFO("No subscribers on track id: {0}", TrackPublishData->track_id);
-                    // std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                    break;
-                case VideoPublishTrackHandler::Status::kPaused:
-                    SPDLOG_INFO("Track {} is paused", TrackPublishData->track_id);
-                    // std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                    continue;
-                default:
-                    SPDLOG_TRACE("Publish status not ok: {0}", static_cast<int>(TH->GetStatus()));
-            }
-
-            if (chunk.has_keyframe) { // TrackHandler_Data->track_type == "video" &&
-                TrackPublishData->group_id++;
-                TrackPublishData->object_id = 0;
-                TrackPublishData->subgroup_id = 0;
-            }
-
-            quicr::ObjectHeaders obj_headers = { TrackPublishData->group_id,
-                                                 TrackPublishData->object_id,
-                                                 TrackPublishData->subgroup_id,
-                                                 chunk.whole_chunk.data.size(),
-                                                 quicr::ObjectStatus::kAvailable,
-                                                 2 /*priority*/,
-                                                 5000 /* ttl */,
-                                                 std::nullopt,
-                                                 std::nullopt };
-
-            try {
-                auto status = TH->PublishObject(obj_headers, chunk.whole_chunk.data);
-                if (status != decltype(status)::kOk) {
-                    throw std::runtime_error("PublishObject returned status=" +
-                                             std::to_string(static_cast<int>(status)));
-                } else if (status == decltype(status)::kOk) {
-                    SPDLOG_INFO("Published CHUNK, rval: {0}, track_idx: {1}, group id: {2}, obj. id: {3}",
-                                static_cast<int>(status),
-                                TrackPublishData->track_id,
-                                TrackPublishData->group_id,
-                                TrackPublishData->object_id++);
-                }
-            } catch (const std::exception& e) {
-                SPDLOG_ERROR("Caught exception trying to publish chunk. (error={})", e.what());
-            }
-        }
-    }
-}
 
 /*===========================================================================*/
 // Video Publisher Thread to perform publishing
@@ -833,9 +790,12 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
         splitter_thread.join();
         return;
     }
+    for (auto& track_entry : shared_state->catalog.tracks()) {
+        track_entry.track_namespace_.assign(shared_state->catalog.namespace_+ ",data");
+    }
     {
         quicr::FullTrackName full_track_name =
-          quicr::example::MakeFullTrackName(shared_state->catalog.namespace_, "catalog");
+          quicr::example::MakeFullTrackName(shared_state->catalog.namespace_+ ",catalog", "publisher");
 
         auto th = std::make_shared<VideoPublishTrackHandler>(full_track_name, quicr::TrackMode::kStream, 1, 3000);
         TrackHandlers.push_back(th);
@@ -849,7 +809,7 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
     for (CatalogTrackEntry track : shared_state->catalog.tracks()) {
 
         quicr::FullTrackName full_track_name =
-          quicr::example::MakeFullTrackName(shared_state->catalog.namespace_, track.name);
+          quicr::example::MakeFullTrackName(track.track_namespace_, track.name);
 
         auto th = std::make_shared<VideoPublishTrackHandler>(full_track_name, quicr::TrackMode::kStream, 2, 3000);
         TrackHandlers.push_back(th);
@@ -959,10 +919,9 @@ DoSubscriber(const std::string& track_namespace,
     auto sub_util = std::make_shared<SubscriberUtil>();
 
     // 1) KATALÓGUS FELIRATKOZÁS
-    auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace, "catalog");
-    const auto catalog_track_handler = std::make_shared<VideoSubscribeTrackHandler>(
-      catalog_full_track_name, messages::FilterType::kLargestObject, joining_fetch, true);
-    catalog_track_handler->InitCatalogTrack(sub_util);
+    auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace+",catalog", "publisher");
+    const auto catalog_track_handler = std::make_shared<CatalogSubscribeTrackHandler>(
+      catalog_full_track_name, messages::FilterType::kLargestObject, joining_fetch, sub_util);
 
     SPDLOG_INFO("Started subscriber");
 
@@ -1007,16 +966,15 @@ DoSubscriber(const std::string& track_namespace,
         for (auto track : sub_util->catalog.tracks()) {
             auto subtrack = std::make_shared<SubTrack>();
             subtrack->track_entry = track;
-            subtrack->namespace_ = track_namespace;
-            subtrack->init = base64::decode_to_uint8_vec(track.b64_init_data_);
+            subtrack->namespace_ = track.track_namespace_;
+            subtrack->init = base64::decode_to_uint8_vec(track.b64_init_data);
 
             auto track_handler =
-              std::make_shared<VideoSubscribeTrackHandler>(quicr::example::MakeFullTrackName(track_namespace, track.name),
+              std::make_shared<VideoSubscribeTrackHandler>(quicr::example::MakeFullTrackName(track.track_namespace_, track.name),
                                                         quicr::messages::FilterType::kNextGroupStart,
                                                         joining_fetch,
-                                                        false);
+                                                        subtrack);
             track_handler->SetSubscribeGst(g_gst);
-            track_handler->InitMediaTrack(subtrack);
 
             uint8_t* init_data = subtrack->init.data();
 

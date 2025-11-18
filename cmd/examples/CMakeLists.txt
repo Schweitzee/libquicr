@@ -24,7 +24,8 @@ pkg_check_modules(FFMPEG IMPORTED_TARGET
         libavformat
         libavcodec
         libavutil
-)
+        libswscale)
+
 if (NOT FFMPEG_FOUND)
         message(FATAL_ERROR
                 "System FFmpeg nem található (pkg-config). "
@@ -53,8 +54,8 @@ set_target_properties(qclient
 
 target_compile_definitions(qclient PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
 
-add_executable(qclient2
-        client2.cpp
+add_executable(qc_video
+        qc_video.cpp
         media.h
         media.cpp
         catalog.hpp
@@ -67,30 +68,106 @@ add_executable(qclient2
         base64_tool.h
         helper_functions.h)
 
-target_link_libraries(qclient2 PRIVATE
+target_link_libraries(qc_video PRIVATE
         quicr
         nlohmann_json::nlohmann_json
         ffmpeg_import
         gstreamer_import)
 
-target_include_directories(qclient2 PRIVATE
+target_include_directories(qc_video PRIVATE
         ../dependencies
         ${FFMPEG_INSTALL_DIR}/include
         ${CMAKE_SOURCE_DIR}/dependencies/concurrentqueue   # itt van a concurrentqueue.h
         ${CMAKE_SOURCE_DIR}/dependencies)
 
-target_compile_options(qclient2
+target_compile_options(qc_video
         PRIVATE
         $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>: -Wpedantic -Wextra -Wall>
         $<$<CXX_COMPILER_ID:MSVC>: >)
 
-set_target_properties(qclient2
+set_target_properties(qc_video
         PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS OFF)
 
-target_compile_definitions(qclient2 PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+target_compile_definitions(qc_video PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+
+add_executable(qc_request
+        qc_request.cpp
+        media.h
+        media.cpp
+        catalog.hpp
+        ffmpeg_cmaf_splitter.cpp
+        ffmpeg_cmaf_splitter.hpp
+        ffmpeg_moq_adapter.cpp
+        ffmpeg_moq_adapter.h
+        subscriber_util.cpp
+        VideoSubscribeTrackHandler.h
+        base64_tool.h
+        helper_functions.h
+        transcode_request.h)
+
+target_link_libraries(qc_request PRIVATE
+        quicr
+        nlohmann_json::nlohmann_json
+        ffmpeg_import
+        gstreamer_import)
+
+target_include_directories(qc_request PRIVATE
+        ../dependencies
+        ${FFMPEG_INSTALL_DIR}/include
+        ${CMAKE_SOURCE_DIR}/dependencies/concurrentqueue   # itt van a concurrentqueue.h
+        ${CMAKE_SOURCE_DIR}/dependencies)
+
+target_compile_options(qc_request
+        PRIVATE
+        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>: -Wpedantic -Wextra -Wall>
+        $<$<CXX_COMPILER_ID:MSVC>: >)
+
+set_target_properties(qc_request
+        PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS OFF)
+
+target_compile_definitions(qc_request PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+
+add_executable(qc_transcode
+        qc_transcode.cpp
+        media.h
+        catalog.hpp
+        subscriber_util.cpp
+        VideoSubscribeTrackHandler.h
+        CatalogSubscribeTrackHandler.h
+        base64_tool.h
+        helper_functions.h
+        transcode_request.h)
+
+target_link_libraries(qc_transcode PRIVATE
+        quicr
+        nlohmann_json::nlohmann_json
+        ffmpeg_import
+        gstreamer_import)
+
+target_include_directories(qc_transcode PRIVATE
+        ../dependencies
+        ${FFMPEG_INSTALL_DIR}/include
+        ${CMAKE_SOURCE_DIR}/dependencies/concurrentqueue   # itt van a concurrentqueue.h
+        ${CMAKE_SOURCE_DIR}/dependencies)
+
+target_compile_options(qc_transcode
+        PRIVATE
+        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>: -Wpedantic -Wextra -Wall>
+        $<$<CXX_COMPILER_ID:MSVC>: >)
+
+set_target_properties(qc_transcode
+        PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS OFF)
+
+target_compile_definitions(qc_transcode PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
 
 add_executable(qserver
         server.cpp
@@ -115,5 +192,5 @@ if(LINT)
         include(Lint)
         Lint(qserver)
         Lint(qclient)
-        Lint(qclient2)
+        Lint(qc_video)
 endif()

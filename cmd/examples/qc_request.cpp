@@ -1,10 +1,8 @@
 //
-// Created by schweitzer on 2025. 11. 06..
+// Created by schweitzer on 2025. 11. 17..
 //
 // SPDX-FileCopyrightText: Copyright (c) 2024 Cisco Systems
 // SPDX-License-Identifier: BSD-2-Clause
-
-#include "TranscodeSubscribeTrackHandler.h"
 
 #include <nlohmann/json.hpp>
 #include <oss/cxxopts.hpp>
@@ -45,12 +43,9 @@
 #include "ffmpeg_moq_adapter.h"
 #include "media.h"
 #include "subscriber_util.h"
-#include "video_transcode_handler.h"
 #include "CatalogSubscribeTrackHandler.h"
 
 #include <set>
-
-
 
 #include <iomanip>
 
@@ -102,6 +97,56 @@ namespace qclient_consts {
     const std::filesystem::path kMoqDataDir = std::filesystem::current_path() / "moq_data";
 }
 
+// === GStreamer subscriber glue (auto-generated) ===
+static std::shared_ptr<SubscriberGst> g_gst = std::make_shared<SubscriberGst>();
+
+static void
+GstInitOnce()
+{
+    gst_init(nullptr, nullptr);
+    static bool inited = false;
+    if (inited)
+        return;
+    if (!g_gst->BuildPipelines()) {
+        g_printerr("Failed to build base GStreamer pipeline\n");
+    }
+    inited = true;
+}
+
+static void
+GstOnCatalog(const std::vector<CatalogTrackEntry>& tracks)
+{
+    GstInitOnce();
+    for (const auto& te : tracks) {
+        if (te.type == "video") {
+            std::vector<uint8_t> init = base64::decode_to_uint8_vec(te.b64_init_data);
+            g_gst->RegisterTrackInit(te.name, true, init.data(), init.size());
+        } else if (te.type == "audio") {
+            std::vector<uint8_t> init = base64::decode_to_uint8_vec(te.b64_init_data);
+            g_gst->RegisterTrackInit(te.name, false, init.data(), init.size());
+        }
+    }
+}
+
+static void
+GstOnInit(const std::string& track, const uint8_t* data, size_t len)
+{
+    GstInitOnce();
+    // g_gst->PushInit(track, data, len);
+}
+
+static void
+GstSelectVideo(const std::string& track)
+{
+    g_gst->SelectVideo(track);
+}
+
+static void
+GstSelectAudio(const std::string& track)
+{
+    g_gst->SelectAudio(track);
+}
+// === end glue ===
 
 class MyFetchTrackHandler : public quicr::FetchTrackHandler
 {
@@ -231,6 +276,7 @@ class VideoPublishTrackHandler : public quicr::PublishTrackHandler
         return quicr::PublishTrackHandler::PublishObject(object_headers, data);
     }
 };
+
 
 /**
  * @brief MoQ client
@@ -477,14 +523,14 @@ class MyClient : public quicr::Client
           request_id);
 
         // Bind publish initiated handler.
-        const auto track_handler = std::make_shared<TranscodeSubscribeTrackHandler>(
-          publish_attributes.track_full_name, quicr::messages::FilterType::kLargestObject, std::nullopt, nullptr); //TODO: solve the automated subscribe handler initiation
+        const auto track_handler = std::make_shared<VideoSubscribeTrackHandler>(
+          publish_attributes.track_full_name, quicr::messages::FilterType::kLargestObject, std::nullopt, nullptr); //TODO:
         track_handler->SetRequestId(request_id);
         track_handler->SetReceivedTrackAlias(publish_attributes.track_alias);
         track_handler->SetPriority(publish_attributes.priority);
         track_handler->SetDeliveryTimeout(publish_attributes.delivery_timeout);
         track_handler->SupportNewGroupRequest(publish_attributes.new_group_request_id.has_value());
-        SubscribeTrack(track_handler);
+        //SubscribeTrack(track_handler);
 
         // Accept the PUBLISH.
         ResolvePublish(connection_handle,
@@ -498,6 +544,14 @@ class MyClient : public quicr::Client
 
   private:
     bool& stop_threads_;
+};
+
+
+
+struct SubTrackHandlerStruct
+{
+    std::shared_ptr<VideoSubscribeTrackHandler> track_handler;
+    SubTrack& trackDetails;
 };
 
 
@@ -518,12 +572,14 @@ DoSubscriber(const std::string& track_namespace,
                                  ? Fetch{ 4, quicr::messages::GroupOrder::kAscending, {}, *join_fetch, absolute }
                                  : std::optional<Fetch>(std::nullopt);
 
+    std::vector<SubTrackHandlerStruct> sub_track_handlers; // itt TOVÁBBRA IS csak non-video-k legyenek
+
 
 
     auto sub_util = std::make_shared<SubscriberUtil>();
 
     // 1) KATALÓGUS FELIRATKOZÁS
-    auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace, "catalog");
+    auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace+",catalog", "publisher");
     const auto catalog_track_handler = std::make_shared<CatalogSubscribeTrackHandler>(
       catalog_full_track_name, messages::FilterType::kLargestObject, joining_fetch, sub_util);
 
@@ -532,14 +588,17 @@ DoSubscriber(const std::string& track_namespace,
     if (client->GetStatus() == MyClient::Status::kReady) {
         SPDLOG_INFO("Subscribing to catalog track");
         client->SubscribeTrack(catalog_track_handler);
-        SPDLOG_INFO("Subbed");
     } else {
-        SPDLOG_ERROR("Client not ready for subscribing to catalog track");
-        return;
+        // kis várakozás míg Ready lesz
+        while (!stop && client->GetStatus() != MyClient::Status::kReady) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (!stop) {
+            client->SubscribeTrack(catalog_track_handler);
+        }
     }
 
-
-    SPDLOG_INFO("Waiting for catalog");
+    // 2) Várunk, míg a catalog bejön és a track lista feltöltődik
     while (!stop && sub_util->catalog_read == false) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         SPDLOG_INFO("Waiting for catalog to be ready");
@@ -547,84 +606,109 @@ DoSubscriber(const std::string& track_namespace,
             break;
     }
 
-    auto it = sub_util->catalog.tracks().begin();
-    while (it.operator->()->name != "video1" && it != sub_util->catalog.tracks().end()) {;
-        ++it;
-    }
-    if (it == sub_util->catalog.tracks().end() && it->name != "video1") {
-        return;
-    }
+    //TODO: catalog arrived at this point, ask user to choose a track for transcoding, then ask for parameters of transcoding (rescale the video to different resolution), then send request for transcoding and wait for the caatalog update to arrive, after that subscribe to the new transcoded track
 
-    auto subtrack = std::make_shared<SubTrack>();
-    subtrack->track_entry = *it.base();
-    subtrack->namespace_ = track_namespace;
-    subtrack->init = base64::decode_to_uint8_vec(it->b64_init_data_);
+    GstInitOnce();
 
-    auto track_handler = std::make_shared<TranscodeSubscribeTrackHandler>(quicr::example::MakeFullTrackName(track_namespace, it->name),
-        quicr::messages::FilterType::kNextGroupStart,
-        joining_fetch,
-        subtrack);
+    // 3) Feliratkozás trackekre: non-video azonnal; video csak EGY kezdetben
+    if (!stop && sub_util->subscribed == false) {
+        SPDLOG_INFO("Subscribing to tracks based on read catalog");
 
 
-    VideoTranscodeConfig config;
-    config.target_height = 72;  // 1080p → 720p
-    config.target_width = 128;
-    config.output_codec = VideoCodec::H264;
+        GstOnCatalog(sub_util->catalog.tracks());
+        // g_gst->SetPlaying();
 
-    auto handler = VideoTranscodeHandler::Create(config);
+        for (auto track : sub_util->catalog.tracks()) {
+            auto subtrack = std::make_shared<SubTrack>();
+            subtrack->track_entry = track;
+            subtrack->namespace_ = track.track_namespace_;
+            subtrack->init = base64::decode_to_uint8_vec(track.b64_init_data);
 
-    // Set callback
-    handler->SetTranscodedObjectCallback(
-        [](const ObjectHeaders& headers, std::vector<uint8_t> data) {
-            // Same group_id and object_id as input!
-                    try {
-                        quicr::BytesSpan data_span = quicr::BytesSpan(data.data(), data.size());
-                        std::cerr << "Transcoded object received: group_id=" << headers.group_id
-                                  << " object_id=" << headers.object_id << std::endl;
+            auto track_handler =
+              std::make_shared<VideoSubscribeTrackHandler>(quicr::example::MakeFullTrackName(track.track_namespace_, track.name),
+                                                        quicr::messages::FilterType::kNextGroupStart,
+                                                        joining_fetch,
+                                                        subtrack);
+            track_handler->SetSubscribeGst(g_gst);
 
-                        fwrite(data_span.data(), data_span.size(), 1, stderr);
-                        fflush(stderr);
-                    } catch (...) {
-                        SPDLOG_ERROR("gatya: exception during writing data");
-                    }
+            uint8_t* init_data = subtrack->init.data();
         }
-    );
-
-    std::cerr << "Input Init" << std::endl;
-    quicr::BytesSpan init_span_in = quicr::BytesSpan(subtrack->init.data(), subtrack->init.size());
-    fwrite(init_span_in.data(), init_span_in.size(), 1, stderr);
-    fflush(stderr);
+    }
 
 
 
-    SPDLOG_DEBUG("setting init");
-    handler->SetInitSegment(subtrack->init);
-    SPDLOG_DEBUG("init set");
-    auto output_init = handler->GetOutputInitSegment();
-    SPDLOG_DEBUG("output init ret");
+    // 4) FŐ CIKLUS — itt fut le a váltás (thread-safe, nincs Client hívás másik szálról)
+    while (not stop) {
+        if (moq_example::terminate) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
 
-    std::cerr << "Output Init" << std::endl;
-    quicr::BytesSpan init_span_out = quicr::BytesSpan(output_init.data(), output_init.size());
-    fwrite(init_span_out.data(), init_span_out.size(), 1, stderr);
-    fflush(stderr);
-
-    while (handler->IsReady() == false && !moq_example::terminate) {;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    client->SubscribeTrack(track_handler);
-    while (stop == false) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    client->UnsubscribeTrack(track_handler);
+    // catalog le
     client->UnsubscribeTrack(catalog_track_handler);
-    handler->Flush();
+
+    // non-video le
+    for (auto [track_handler, trackDetails] : sub_track_handlers) {
+        client->UnsubscribeTrack(track_handler);
+    }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     SPDLOG_INFO("Subscriber done track");
     moq_example::terminate = true;
 }
 
+/*===========================================================================*/
+// Fetch thread to perform fetch
+/*===========================================================================*/
+
+struct Range
+{
+    uint64_t start;
+    uint64_t end;
+};
+
+void
+DoFetch(const quicr::FullTrackName& full_track_name,
+        const Range& group_range,
+        const Range& object_range,
+        const std::shared_ptr<quicr::Client>& client,
+        const bool& stop)
+{
+    auto track_handler = MyFetchTrackHandler::Create(
+      full_track_name, group_range.start, object_range.start, group_range.end, object_range.end);
+
+    SPDLOG_INFO("Started fetch");
+
+    bool fetch_track{ false };
+
+    while (not stop) {
+        if ((!fetch_track) && (client->GetStatus() == MyClient::Status::kReady)) {
+            SPDLOG_INFO("Fetching track");
+            client->FetchTrack(track_handler);
+            fetch_track = true;
+        }
+
+        if (track_handler->GetStatus() == quicr::FetchTrackHandler::Status::kPendingResponse) {
+            // do nothing...
+        } else if (!fetch_track || (track_handler->GetStatus() != quicr::FetchTrackHandler::Status::kOk)) {
+            SPDLOG_INFO("GetStatus() != quicr::FetchTrackHandler::Status::kOk {}", (int)track_handler->GetStatus());
+            moq_example::terminate = true;
+            moq_example::cv.notify_all();
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+
+    client->CancelFetchTrack(track_handler);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    moq_example::terminate = true;
+}
 
 /*===========================================================================*/
 // Main program
@@ -672,6 +756,11 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
         qclient_vars::publish_clock = true;
     }
 
+    if (cli_opts.count("video") && cli_opts["video"].as<bool>() == true) {
+        // SPDLOG_INFO("Running in video publish mode");
+        std::cerr << "Running in video publish mode" << std::endl;
+        qclient_vars::video = true;
+    }
 
     if (cli_opts.count("sub_namespace") && cli_opts.count("sub_name")) {
         enable_sub = true;
@@ -835,6 +924,7 @@ main(int argc, char* argv[])
         }
 
         std::thread sub_thread;
+        std::thread fetch_thread;
 
         if (result.count("sub_announces")) {
             const auto& prefix_ns = quicr::example::MakeFullTrackName(result["sub_announces"].as<std::string>(), "");
@@ -877,16 +967,38 @@ main(int argc, char* argv[])
                                      joining_fetch,
                                      absolute);
         }
+        if (enable_fetch) {
+            const auto& fetch_track_name = quicr::example::MakeFullTrackName(
+              result["fetch_namespace"].as<std::string>(), result["fetch_name"].as<std::string>());
+
+            fetch_thread =
+              std::thread(DoFetch,
+                          fetch_track_name,
+                          Range{ result["start_group"].as<uint64_t>(), result["end_group"].as<uint64_t>() },
+                          Range{ result["start_object"].as<uint64_t>(), result["end_object"].as<uint64_t>() },
+                          client,
+                          std::ref(stop_threads));
+        }
 
         // Wait until told to terminate
         moq_example::cv.wait(lock, [&]() { return moq_example::terminate; });
 
         stop_threads = true;
         SPDLOG_ERROR("Stopping threads...");
+        // if (parse_thread.joinable()) {
+        //     parse_thread.join();
+        // }
 
+        if (pub_thread.joinable()) {
+            pub_thread.join();
+        }
 
         if (sub_thread.joinable()) {
             sub_thread.join();
+        }
+
+        if (fetch_thread.joinable()) {
+            fetch_thread.join();
         }
 
         client->Disconnect();
