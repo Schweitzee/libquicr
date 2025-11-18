@@ -480,9 +480,16 @@ class TranscodeClient::Impl
 
     bool ProcessFragment(const uint8_t* data, size_t size)
     {
+        // Fragments need the init segment context (trex box) to be parsed correctly
+        // Concatenate init segment + fragment for demuxing
+        std::vector<uint8_t> combined_data;
+        combined_data.reserve(init_segment_.size() + size);
+        combined_data.insert(combined_data.end(), init_segment_.begin(), init_segment_.end());
+        combined_data.insert(combined_data.end(), data, data + size);
+
         // Create a temporary input context for this fragment
         IOBuffer frag_io_buf;
-        frag_io_buf.Reset(data, size);
+        frag_io_buf.Reset(combined_data.data(), combined_data.size());
 
         const int avio_buffer_size = 4096;
         uint8_t* avio_buffer = static_cast<uint8_t*>(av_malloc(avio_buffer_size));
