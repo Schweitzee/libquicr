@@ -21,12 +21,6 @@
 using json = nlohmann::json;
 
 namespace qtranscode_vars {
-bool debug = false;
-uint32_t target_width = 1280;
-uint32_t target_height = 720;
-uint32_t target_bitrate = 0;
-std::string encoder_preset = "medium";
-std::string output_file_prefix;
 std::shared_ptr<quicr::ThreadedTickService> tick_service = std::make_shared<quicr::ThreadedTickService>();
 } // namespace qtranscode_vars
 
@@ -36,8 +30,8 @@ const std::filesystem::path kOutputDir = std::filesystem::current_path() / "tran
 
 /**
  * @brief Subscribe track handler with transcoding support
- * @details This handler receives CMAF fragments, transcodes them using the
- *          TranscodeClient, and outputs the transcoded stream.
+ * @details This handler receives CMAF fragments and transcodes them.
+ *          It demonstrates the minimal integration pattern for the TranscodeClient.
  */
 class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 {
@@ -45,48 +39,63 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
     TranscodeSubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
                                    quicr::messages::FilterType filter_type,
                                    const std::optional<JoiningFetch>& joining_fetch,
-                                   uint32_t target_width,
-                                   uint32_t target_height,
-                                   bool publisher_initiated = false)
+                                   const quicr::transcode::TranscodeConfig& config,
+                                   const std::string& output_file = "")
       : SubscribeTrackHandler(full_track_name,
                               3,
                               quicr::messages::GroupOrder::kAscending,
                               filter_type,
                               joining_fetch,
-                              publisher_initiated)
-      , target_width_(target_width)
-      , target_height_(target_height)
+                              false)
     {
-        // Create output directory
-        std::filesystem::create_directories(qtranscode_consts::kOutputDir);
-
-        // Initialize transcode client
-        quicr::transcode::TranscodeConfig config;
-        config.target_width = target_width;
-        config.target_height = target_height;
-        config.target_bitrate = qtranscode_vars::target_bitrate;
-        config.encoder_preset = qtranscode_vars::encoder_preset;
-        config.debug = qtranscode_vars::debug;
-
-        transcode_client_ = quicr::transcode::TranscodeClient::Create(config);
-
-        // Set up output callbacks
-        transcode_client_->SetOutputInitCallback(
-          [this](const uint8_t* data, size_t size) { HandleOutputInit(data, size); });
-
-        transcode_client_->SetOutputFragmentCallback(
-          [this](const uint8_t* data, size_t size) { HandleOutputFragment(data, size); });
-
-        // Open output files if prefix specified
-        if (!qtranscode_vars::output_file_prefix.empty()) {
-            const auto output_path = qtranscode_consts::kOutputDir / (qtranscode_vars::output_file_prefix + ".mp4");
+        // Create output directory if needed
+        if (!output_file.empty()) {
+            std::filesystem::create_directories(qtranscode_consts::kOutputDir);
+            const auto output_path = qtranscode_consts::kOutputDir / (output_file + ".mp4");
             output_file_.open(output_path, std::ios::binary | std::ios::trunc);
             if (output_file_) {
                 SPDLOG_INFO("Writing transcoded output to: {}", output_path.string());
             }
         }
 
-        SPDLOG_INFO("TranscodeSubscribeTrackHandler initialized for {}x{}", target_width, target_height);
+        // Create transcode client with config
+        transcode_client_ = quicr::transcode::TranscodeClient::Create(config);
+
+        // Set output init callback
+        transcode_client_->SetOutputInitCallback([this](const uint8_t* data, size_t size) {
+            SPDLOG_INFO("Received transcoded init segment: {} bytes", size);
+
+            // Write to file if enabled
+            if (output_file_) {
+                output_file_.write(reinterpret_cast<const char*>(data), size);
+                output_file_.flush();
+            }
+
+            total_output_bytes_ += size;
+
+            // Forward to your publisher or next stage here
+            // Example: PublishTranscodedInit(data, size);
+        });
+
+        // Set output fragment callback
+        transcode_client_->SetOutputFragmentCallback([this](const uint8_t* data, size_t size) {
+            SPDLOG_DEBUG("Received transcoded fragment: {} bytes", size);
+
+            // Write to file if enabled
+            if (output_file_) {
+                output_file_.write(reinterpret_cast<const char*>(data), size);
+                output_file_.flush();
+            }
+
+            total_output_bytes_ += size;
+
+            // Forward to your publisher or next stage here
+            // Example: PublishTranscodedFragment(data, size);
+        });
+
+        SPDLOG_INFO("TranscodeSubscribeTrackHandler initialized ({}x{})",
+                    config.target_width,
+                    config.target_height);
     }
 
     virtual ~TranscodeSubscribeTrackHandler()
@@ -130,8 +139,7 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 
             } else if (box_type == 0x6D6F6F66) { // 'moof' - media fragment
                 if (!init_received_) {
-                    SPDLOG_WARN("Received fragment before init segment, buffering...");
-                    // In a production system, you might want to buffer these
+                    SPDLOG_WARN("Received fragment before init segment, skipping...");
                     return;
                 }
 
@@ -143,9 +151,6 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
                 }
 
                 fragment_count_++;
-
-            } else {
-                SPDLOG_WARN("Unknown box type: 0x{:08x}, size: {}", box_type, data.size());
             }
         }
     }
@@ -155,7 +160,7 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         switch (status) {
             case Status::kOk: {
                 if (auto track_alias = GetTrackAlias(); track_alias.has_value()) {
-                    SPDLOG_INFO("Transcode track alias: {} is ready to read", track_alias.value());
+                    SPDLOG_INFO("Transcode track alias: {} is ready", track_alias.value());
                 }
             } break;
 
@@ -168,44 +173,10 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         }
     }
 
-  private:
-    void HandleOutputInit(const uint8_t* data, size_t size)
-    {
-        SPDLOG_INFO("Received transcoded init segment: {} bytes", size);
-
-        // Write to file if enabled
-        if (output_file_) {
-            output_file_.write(reinterpret_cast<const char*>(data), size);
-            output_file_.flush();
-        }
-
-        total_output_bytes_ += size;
-
-        // In a real application, you would forward this to the publisher or next stage
-        // For example:
-        // PublishTranscodedInit(data, size);
-    }
-
-    void HandleOutputFragment(const uint8_t* data, size_t size)
-    {
-        SPDLOG_DEBUG("Received transcoded fragment: {} bytes", size);
-
-        // Write to file if enabled
-        if (output_file_) {
-            output_file_.write(reinterpret_cast<const char*>(data), size);
-            output_file_.flush();
-        }
-
-        total_output_bytes_ += size;
-
-        // In a real application, you would forward this to the publisher or next stage
-        // For example:
-        // PublishTranscodedFragment(data, size);
-    }
+    // Get access to the transcode client (if needed externally)
+    std::shared_ptr<quicr::transcode::TranscodeClient> GetTranscodeClient() { return transcode_client_; }
 
   private:
-    uint32_t target_width_;
-    uint32_t target_height_;
     std::shared_ptr<quicr::transcode::TranscodeClient> transcode_client_;
     bool init_received_{ false };
     size_t fragment_count_{ 0 };
@@ -215,20 +186,20 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 };
 
 /**
- * @brief MoQ client with transcoding support
+ * @brief Standard MoQ client (not transcoding-specific)
  */
-class TranscodeClient : public quicr::Client
+class MyClient : public quicr::Client
 {
-    TranscodeClient(const quicr::ClientConfig& cfg, bool& stop_threads)
+    MyClient(const quicr::ClientConfig& cfg, bool& stop_threads)
       : quicr::Client(cfg)
       , stop_threads_(stop_threads)
     {
     }
 
   public:
-    static std::shared_ptr<TranscodeClient> Create(const quicr::ClientConfig& cfg, bool& stop_threads)
+    static std::shared_ptr<MyClient> Create(const quicr::ClientConfig& cfg, bool& stop_threads)
     {
-        return std::shared_ptr<TranscodeClient>(new TranscodeClient(cfg, stop_threads));
+        return std::shared_ptr<MyClient>(new MyClient(cfg, stop_threads));
     }
 
     void StatusChanged(Status status) override
@@ -258,24 +229,28 @@ class TranscodeClient : public quicr::Client
 
 /**
  * @brief Subscriber function with transcoding
+ * @details Only this function is transcoding-aware. The client remains generic.
  */
 void
 DoSubscriber(const quicr::FullTrackName& full_track_name,
              const std::shared_ptr<quicr::Client>& client,
              quicr::messages::FilterType filter_type,
              const bool& stop,
-             uint32_t target_width,
-             uint32_t target_height)
+             const quicr::transcode::TranscodeConfig& transcode_config,
+             const std::string& output_file = "")
 {
+    // Create transcode-enabled track handler
     const auto track_handler = std::make_shared<TranscodeSubscribeTrackHandler>(
-      full_track_name, filter_type, std::nullopt, target_width, target_height);
+      full_track_name, filter_type, std::nullopt, transcode_config, output_file);
 
-    SPDLOG_INFO("Started transcode subscriber for {}x{}", target_width, target_height);
+    SPDLOG_INFO("Started transcode subscriber ({}x{})",
+                transcode_config.target_width,
+                transcode_config.target_height);
 
     bool subscribe_track{ false };
 
     while (not stop) {
-        if ((!subscribe_track) && (client->GetStatus() == TranscodeClient::Status::kReady)) {
+        if ((!subscribe_track) && (client->GetStatus() == MyClient::Status::kReady)) {
             SPDLOG_INFO("Subscribing to track for transcoding");
             client->SubscribeTrack(track_handler);
             subscribe_track = true;
@@ -307,32 +282,11 @@ InitConfig(cxxopts::ParseResult& cli_opts)
     if (cli_opts.count("debug") && cli_opts["debug"].as<bool>() == true) {
         SPDLOG_INFO("Setting debug level");
         spdlog::set_level(spdlog::level::debug);
-        qtranscode_vars::debug = true;
     }
 
     if (cli_opts.count("version") && cli_opts["version"].as<bool>() == true) {
         SPDLOG_INFO("QuicR library version: {}", QUICR_VERSION);
         exit(0);
-    }
-
-    if (cli_opts.count("width")) {
-        qtranscode_vars::target_width = cli_opts["width"].as<uint32_t>();
-    }
-
-    if (cli_opts.count("height")) {
-        qtranscode_vars::target_height = cli_opts["height"].as<uint32_t>();
-    }
-
-    if (cli_opts.count("bitrate")) {
-        qtranscode_vars::target_bitrate = cli_opts["bitrate"].as<uint32_t>();
-    }
-
-    if (cli_opts.count("preset")) {
-        qtranscode_vars::encoder_preset = cli_opts["preset"].as<std::string>();
-    }
-
-    if (cli_opts.count("output")) {
-        qtranscode_vars::output_file_prefix = cli_opts["output"].as<std::string>();
     }
 
     config.endpoint_id = cli_opts["endpoint_id"].as<std::string>();
@@ -409,15 +363,31 @@ main(int argc, char* argv[])
 
     std::unique_lock lock(moq_example::main_mutex);
 
-    quicr::ClientConfig config = InitConfig(result);
+    // Initialize client config (standard, not transcoding-specific)
+    quicr::ClientConfig client_config = InitConfig(result);
+
+    // Create transcode config (code-based configuration)
+    quicr::transcode::TranscodeConfig transcode_config;
+    transcode_config.target_width = result["width"].as<uint32_t>();
+    transcode_config.target_height = result["height"].as<uint32_t>();
+    transcode_config.target_bitrate = result["bitrate"].as<uint32_t>();
+    transcode_config.encoder_preset = result["preset"].as<std::string>();
+    transcode_config.debug = result.count("debug") && result["debug"].as<bool>();
+
+    std::string output_file;
+    if (result.count("output")) {
+        output_file = result["output"].as<std::string>();
+    }
 
     SPDLOG_INFO("Starting MOQ Transcode Client");
-    SPDLOG_INFO("Target resolution: {}x{}", qtranscode_vars::target_width, qtranscode_vars::target_height);
-    SPDLOG_INFO("Encoder preset: {}", qtranscode_vars::encoder_preset);
+    SPDLOG_INFO("Target resolution: {}x{}", transcode_config.target_width, transcode_config.target_height);
+    SPDLOG_INFO("Encoder preset: {}", transcode_config.encoder_preset);
 
     try {
         bool stop_threads{ false };
-        auto client = TranscodeClient::Create(config, stop_threads);
+
+        // Create standard MoQ client (not transcoding-specific)
+        auto client = MyClient::Create(client_config, stop_threads);
 
         if (client->Connect() != quicr::Transport::Status::kConnecting) {
             SPDLOG_ERROR("Failed to connect to server due to invalid params, check URI");
@@ -425,7 +395,7 @@ main(int argc, char* argv[])
         }
 
         while (not stop_threads) {
-            if (client->GetStatus() == TranscodeClient::Status::kReady) {
+            if (client->GetStatus() == MyClient::Status::kReady) {
                 SPDLOG_INFO("Connected to server");
                 break;
             }
@@ -433,6 +403,7 @@ main(int argc, char* argv[])
         }
 
         // Start subscriber with transcoding
+        // Only DoSubscriber is transcoding-aware
         const auto& sub_track_name =
           quicr::example::MakeFullTrackName(result["sub_namespace"].as<std::string>(),
                                             result["sub_name"].as<std::string>());
@@ -442,8 +413,8 @@ main(int argc, char* argv[])
                                client,
                                quicr::messages::FilterType::kNextGroupStart,
                                std::ref(stop_threads),
-                               qtranscode_vars::target_width,
-                               qtranscode_vars::target_height);
+                               transcode_config,
+                               output_file);
 
         // Wait until told to terminate
         moq_example::cv.wait(lock, [&]() { return moq_example::terminate; });
