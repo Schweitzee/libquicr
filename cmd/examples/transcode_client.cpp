@@ -54,12 +54,12 @@ class TranscodeClient::Impl
             return false;
         }
 
-        // Append init segment to input buffer
-        input_buffer_.insert(input_buffer_.end(), data, data + size);
+        // Store init segment for prepending to fragments
+        init_segment_.assign(data, data + size);
 
-        // Initialize contexts on first init
+        // Initialize decoder on first init
         if (!contexts_initialized_) {
-            if (!InitializeContexts()) {
+            if (!InitializeDecoder()) {
                 return false;
             }
             contexts_initialized_ = true;
@@ -81,11 +81,8 @@ class TranscodeClient::Impl
             return false;
         }
 
-        // Append fragment to input buffer
-        input_buffer_.insert(input_buffer_.end(), data, data + size);
-
-        // Process all available data
-        return ProcessAvailableData();
+        // Process fragment with init segment prepended
+        return ProcessFragment(data, size);
     }
 
     bool Flush()
@@ -144,14 +141,6 @@ class TranscodeClient::Impl
             avcodec_free_context(&encoder_ctx_);
         }
 
-        if (input_fmt_ctx_) {
-            if (input_fmt_ctx_->pb) {
-                av_freep(&input_fmt_ctx_->pb->buffer);
-                avio_context_free(&input_fmt_ctx_->pb);
-            }
-            avformat_close_input(&input_fmt_ctx_);
-        }
-
         if (output_fmt_ctx_) {
             if (output_fmt_ctx_->pb) {
                 av_freep(&output_fmt_ctx_->pb->buffer);
@@ -163,30 +152,16 @@ class TranscodeClient::Impl
 
         ready_ = false;
         contexts_initialized_ = false;
+        output_initialized_ = false;
     }
 
-    /**
-     * @brief Custom read callback for AVIO - reads from input_buffer_
-     */
-    static int ReadFromBuffer(void* opaque, uint8_t* buf, int buf_size)
+    bool InitializeDecoder()
     {
-        auto* impl = static_cast<Impl*>(opaque);
+        // Parse init segment to get codec info
+        AVFormatContext* temp_fmt_ctx = nullptr;
+        AVIOContext* temp_avio = nullptr;
 
-        const size_t available = impl->input_buffer_.size() - impl->read_pos_;
-        if (available == 0) {
-            return AVERROR(EAGAIN); // No data available yet
-        }
-
-        const size_t to_read = std::min(static_cast<size_t>(buf_size), available);
-        std::memcpy(buf, impl->input_buffer_.data() + impl->read_pos_, to_read);
-        impl->read_pos_ += to_read;
-
-        return static_cast<int>(to_read);
-    }
-
-    bool InitializeContexts()
-    {
-        // Create custom AVIO context that reads from our buffer
+        // Create temporary IO context for init segment
         const int avio_buffer_size = 32768;
         uint8_t* avio_buffer = static_cast<uint8_t*>(av_malloc(avio_buffer_size));
         if (!avio_buffer) {
@@ -194,90 +169,209 @@ class TranscodeClient::Impl
             return false;
         }
 
-        AVIOContext* avio_ctx =
-          avio_alloc_context(avio_buffer, avio_buffer_size, 0, this, ReadFromBuffer, nullptr, nullptr);
-        if (!avio_ctx) {
+        temp_avio = avio_alloc_context(avio_buffer,
+                                        avio_buffer_size,
+                                        0,
+                                        &init_segment_,
+                                        [](void* opaque, uint8_t* buf, int buf_size) -> int {
+                                            auto* vec = static_cast<std::vector<uint8_t>*>(opaque);
+                                            size_t to_read = std::min(static_cast<size_t>(buf_size), vec->size());
+                                            if (to_read == 0)
+                                                return AVERROR_EOF;
+                                            std::memcpy(buf, vec->data(), to_read);
+                                            vec->erase(vec->begin(), vec->begin() + to_read);
+                                            return static_cast<int>(to_read);
+                                        },
+                                        nullptr,
+                                        nullptr);
+
+        if (!temp_avio) {
             av_free(avio_buffer);
-            last_error_ = "Failed to allocate AVIO context";
+            last_error_ = "Failed to allocate temporary AVIO";
             return false;
         }
 
-        // Allocate format context
-        input_fmt_ctx_ = avformat_alloc_context();
-        if (!input_fmt_ctx_) {
-            avio_context_free(&avio_ctx);
-            last_error_ = "Failed to allocate input format context";
+        temp_fmt_ctx = avformat_alloc_context();
+        if (!temp_fmt_ctx) {
+            avio_context_free(&temp_avio);
+            last_error_ = "Failed to allocate temporary format context";
             return false;
         }
 
-        input_fmt_ctx_->pb = avio_ctx;
+        temp_fmt_ctx->pb = temp_avio;
 
-        // Open input
-        int ret = avformat_open_input(&input_fmt_ctx_, nullptr, nullptr, nullptr);
+        int ret = avformat_open_input(&temp_fmt_ctx, nullptr, nullptr, nullptr);
         if (ret < 0) {
+            av_freep(&temp_avio->buffer);
+            avio_context_free(&temp_avio);
+            avformat_free_context(temp_fmt_ctx);
             char errbuf[AV_ERROR_MAX_STRING_SIZE];
             av_strerror(ret, errbuf, sizeof(errbuf));
-            last_error_ = std::string("Failed to open input: ") + errbuf;
+            last_error_ = std::string("Failed to parse init segment: ") + errbuf;
             return false;
         }
 
-        // Find stream info
-        ret = avformat_find_stream_info(input_fmt_ctx_, nullptr);
+        ret = avformat_find_stream_info(temp_fmt_ctx, nullptr);
         if (ret < 0) {
-            char errbuf[AV_ERROR_MAX_STRING_SIZE];
-            av_strerror(ret, errbuf, sizeof(errbuf));
-            last_error_ = std::string("Failed to find stream info: ") + errbuf;
+            av_freep(&temp_avio->buffer);
+            avio_context_free(&temp_avio);
+            avformat_close_input(&temp_fmt_ctx);
+            last_error_ = "Failed to find stream info in init";
             return false;
         }
 
         // Find video stream
-        for (unsigned int i = 0; i < input_fmt_ctx_->nb_streams; i++) {
-            if (input_fmt_ctx_->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-                video_stream_index_ = i;
+        int video_idx = -1;
+        for (unsigned int i = 0; i < temp_fmt_ctx->nb_streams; i++) {
+            if (temp_fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                video_idx = i;
                 break;
             }
         }
 
-        if (video_stream_index_ < 0) {
-            last_error_ = "No video stream found in input";
+        if (video_idx < 0) {
+            av_freep(&temp_avio->buffer);
+            avio_context_free(&temp_avio);
+            avformat_close_input(&temp_fmt_ctx);
+            last_error_ = "No video stream found";
             return false;
         }
 
-        // Set up decoder
-        AVCodecParameters* codecpar = input_fmt_ctx_->streams[video_stream_index_]->codecpar;
+        // Get codec parameters
+        AVCodecParameters* codecpar = temp_fmt_ctx->streams[video_idx]->codecpar;
+        input_time_base_ = temp_fmt_ctx->streams[video_idx]->time_base;
+
+        // Create decoder
         const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
         if (!decoder) {
+            av_freep(&temp_avio->buffer);
+            avio_context_free(&temp_avio);
+            avformat_close_input(&temp_fmt_ctx);
             last_error_ = "Failed to find decoder";
             return false;
         }
 
         decoder_ctx_ = avcodec_alloc_context3(decoder);
         if (!decoder_ctx_) {
+            av_freep(&temp_avio->buffer);
+            avio_context_free(&temp_avio);
+            avformat_close_input(&temp_fmt_ctx);
             last_error_ = "Failed to allocate decoder context";
             return false;
         }
 
         ret = avcodec_parameters_to_context(decoder_ctx_, codecpar);
         if (ret < 0) {
+            avcodec_free_context(&decoder_ctx_);
+            av_freep(&temp_avio->buffer);
+            avio_context_free(&temp_avio);
+            avformat_close_input(&temp_fmt_ctx);
             last_error_ = "Failed to copy codec parameters";
             return false;
         }
 
         ret = avcodec_open2(decoder_ctx_, decoder, nullptr);
         if (ret < 0) {
+            avcodec_free_context(&decoder_ctx_);
+            av_freep(&temp_avio->buffer);
+            avio_context_free(&temp_avio);
+            avformat_close_input(&temp_fmt_ctx);
             char errbuf[AV_ERROR_MAX_STRING_SIZE];
             av_strerror(ret, errbuf, sizeof(errbuf));
             last_error_ = std::string("Failed to open decoder: ") + errbuf;
             return false;
         }
 
-        input_time_base_ = input_fmt_ctx_->streams[video_stream_index_]->time_base;
-
         if (config_.debug) {
             SPDLOG_INFO("Decoder initialized: {}x{} codec: {}",
                         codecpar->width,
                         codecpar->height,
                         avcodec_get_name(codecpar->codec_id));
+        }
+
+        // Cleanup temporary context
+        av_freep(&temp_avio->buffer);
+        avio_context_free(&temp_avio);
+        avformat_close_input(&temp_fmt_ctx);
+
+        return true;
+    }
+
+    bool ProcessFragment(const uint8_t* data, size_t size)
+    {
+        // Combine init segment + fragment
+        std::vector<uint8_t> combined;
+        combined.reserve(init_segment_.size() + size);
+        combined.insert(combined.end(), init_segment_.begin(), init_segment_.end());
+        combined.insert(combined.end(), data, data + size);
+
+        // Parse combined data
+        AVFormatContext* frag_fmt_ctx = nullptr;
+        AVIOContext* frag_avio = nullptr;
+
+        const int avio_buffer_size = 32768;
+        uint8_t* avio_buffer = static_cast<uint8_t*>(av_malloc(avio_buffer_size));
+        if (!avio_buffer) {
+            last_error_ = "Failed to allocate fragment AVIO buffer";
+            return false;
+        }
+
+        frag_avio = avio_alloc_context(avio_buffer,
+                                        avio_buffer_size,
+                                        0,
+                                        &combined,
+                                        [](void* opaque, uint8_t* buf, int buf_size) -> int {
+                                            auto* vec = static_cast<std::vector<uint8_t>*>(opaque);
+                                            size_t to_read = std::min(static_cast<size_t>(buf_size), vec->size());
+                                            if (to_read == 0)
+                                                return AVERROR_EOF;
+                                            std::memcpy(buf, vec->data(), to_read);
+                                            vec->erase(vec->begin(), vec->begin() + to_read);
+                                            return static_cast<int>(to_read);
+                                        },
+                                        nullptr,
+                                        nullptr);
+
+        if (!frag_avio) {
+            av_free(avio_buffer);
+            return false;
+        }
+
+        frag_fmt_ctx = avformat_alloc_context();
+        if (!frag_fmt_ctx) {
+            avio_context_free(&frag_avio);
+            return false;
+        }
+
+        frag_fmt_ctx->pb = frag_avio;
+
+        int ret = avformat_open_input(&frag_fmt_ctx, nullptr, nullptr, nullptr);
+        if (ret < 0) {
+            av_freep(&frag_avio->buffer);
+            avio_context_free(&frag_avio);
+            avformat_free_context(frag_fmt_ctx);
+            return false;
+        }
+
+        // Read packets and decode
+        AVPacket* packet = av_packet_alloc();
+        while (av_read_frame(frag_fmt_ctx, packet) >= 0) {
+            if (packet->stream_index == 0) { // Video stream
+                ProcessPacket(packet);
+            }
+            av_packet_unref(packet);
+        }
+        av_packet_free(&packet);
+
+        // Cleanup
+        av_freep(&frag_avio->buffer);
+        avio_context_free(&frag_avio);
+        avformat_close_input(&frag_fmt_ctx);
+
+        // Send output if available
+        if (output_fragment_cb_ && !output_buffer_.empty()) {
+            output_fragment_cb_(output_buffer_.data(), output_buffer_.size());
+            output_buffer_.clear();
         }
 
         return true;
@@ -445,46 +539,6 @@ class TranscodeClient::Impl
         return true;
     }
 
-    bool ProcessAvailableData()
-    {
-        AVPacket* packet = av_packet_alloc();
-        if (!packet) {
-            last_error_ = "Failed to allocate packet";
-            return false;
-        }
-
-        // Read all available packets from input
-        while (true) {
-            int ret = av_read_frame(input_fmt_ctx_, packet);
-
-            if (ret == AVERROR(EAGAIN)) {
-                // No more data available right now
-                break;
-            } else if (ret == AVERROR_EOF) {
-                // End of stream (shouldn't happen in streaming context)
-                break;
-            } else if (ret < 0) {
-                // Other error - might be temporary, continue
-                break;
-            }
-
-            if (packet->stream_index == video_stream_index_) {
-                ProcessPacket(packet);
-            }
-
-            av_packet_unref(packet);
-        }
-
-        av_packet_free(&packet);
-
-        // Send output fragment if data available
-        if (output_fragment_cb_ && !output_buffer_.empty()) {
-            output_fragment_cb_(output_buffer_.data(), output_buffer_.size());
-            output_buffer_.clear();
-        }
-
-        return true;
-    }
 
     void ProcessPacket(AVPacket* packet)
     {
@@ -587,13 +641,10 @@ class TranscodeClient::Impl
     bool contexts_initialized_{ false };
     std::string last_error_;
 
-    // Input buffering - continuous stream
-    std::vector<uint8_t> input_buffer_;
-    size_t read_pos_{ 0 };
+    // Init segment storage (for prepending to fragments)
+    std::vector<uint8_t> init_segment_;
 
-    // Single persistent input context
-    AVFormatContext* input_fmt_ctx_{ nullptr };
-    int video_stream_index_{ -1 };
+    // Persistent decoder context
     AVCodecContext* decoder_ctx_{ nullptr };
     AVRational input_time_base_{};
 
