@@ -39,38 +39,25 @@ struct TranscodeConfig
 };
 
 /**
- * @brief CMAF Transcode Client
+ * @brief CMAF Transcode Client (Continuous Streaming)
  *
- * This class handles transcoding of fragmented CMAF (fragmented MP4) streams.
- * It accepts CMAF initialization segments and media fragments as input, and
- * produces rescaled CMAF output via callbacks.
+ * This class handles transcoding of fragmented CMAF streams using a continuous
+ * processing pipeline. Data is buffered and processed through persistent
+ * decoder/encoder contexts for efficiency.
  *
- * The client preserves timestamp information and maintains valid CMAF structure
- * in the output stream.
+ * Architecture:
+ * - PushInputInit/Fragment() buffer data into input stream
+ * - Single persistent AVFormatContext reads from buffer via custom AVIO
+ * - Single decoder/encoder contexts maintained throughout stream
+ * - Processed frames output via callbacks
  *
  * Usage:
- * 1. Create a TranscodeClient with desired configuration
- * 2. Set output callbacks for init segment and fragments
- * 3. Push input init segment when received
- * 4. Push input fragments as they arrive
- * 5. Call Flush() when done
- *
- * Example:
  * @code
- *   TranscodeConfig config;
- *   config.target_width = 1280;
- *   config.target_height = 720;
- *
  *   auto client = TranscodeClient::Create(config);
- *   client->SetOutputInitCallback([](const uint8_t* data, size_t size) {
- *       // Handle output init segment
- *   });
- *   client->SetOutputFragmentCallback([](const uint8_t* data, size_t size) {
- *       // Handle output fragment
- *   });
- *
+ *   client->SetOutputInitCallback([](const uint8_t* data, size_t size) { ... });
+ *   client->SetOutputFragmentCallback([](const uint8_t* data, size_t size) { ... });
  *   client->PushInputInit(init_data, init_size);
- *   client->PushInputFragment(fragment_data, fragment_size);
+ *   client->PushInputFragment(fragment_data, fragment_size); // Processes continuously
  *   client->Flush();
  * @endcode
  */
@@ -116,7 +103,11 @@ class TranscodeClient
     bool PushInputInit(const uint8_t* data, size_t size);
 
     /**
-     * @brief Push input CMAF media fragment (moof + mdat)
+     * @brief Push input CMAF media fragment
+     *
+     * Appends fragment to input buffer and processes available data through
+     * the continuous decode/encode pipeline.
+     *
      * @param data Pointer to fragment data
      * @param size Size of fragment in bytes
      * @return true on success, false on error
