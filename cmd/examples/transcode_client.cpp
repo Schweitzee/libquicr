@@ -598,11 +598,11 @@ class TranscodeClient::Impl
                   scaled_frame_->data,
                   scaled_frame_->linesize);
 
-        // Copy timing information
-        scaled_frame_->pts = frame->pts;
-        scaled_frame_->pkt_dts = frame->pkt_dts;
-        scaled_frame_->pict_type = frame->pict_type;
-        scaled_frame_->key_frame = frame->key_frame;
+        // Set monotonic PTS - let encoder determine frame type and DTS
+        scaled_frame_->pts = next_pts_++;
+
+        // Do NOT copy pict_type or key_frame - let encoder decide
+        // This avoids "specified frame type is not compatible" warnings
 
         // Send frame to encoder
         int ret = avcodec_send_frame(encoder_ctx_, scaled_frame_);
@@ -683,6 +683,7 @@ class TranscodeClient::Impl
     bool output_initialized_{ false };
     bool init_segment_sent_{ false };
     AVPacket* encoder_packet_{ nullptr };
+    int64_t next_pts_{ 0 }; // Monotonic PTS counter for encoder
 
     // Callbacks
     OutputInitCallback output_init_cb_;
