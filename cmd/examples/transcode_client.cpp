@@ -613,7 +613,7 @@ class TranscodeClient::Impl
     {
         int ret;
         while ((ret = avcodec_receive_packet(encoder_ctx_, encoder_packet_)) >= 0) {
-            WritePacket(encoder_packet_);
+            WriteOutputPacket(encoder_packet_);
             av_packet_unref(encoder_packet_);
         }
     }
@@ -626,12 +626,12 @@ class TranscodeClient::Impl
 
         int ret;
         while ((ret = avcodec_receive_packet(encoder_ctx_, encoder_packet_)) >= 0) {
-            WritePacket(encoder_packet_);
+            WriteOutputPacket(encoder_packet_);
             av_packet_unref(encoder_packet_);
         }
     }
 
-    void WritePacket(AVPacket* packet)
+    void WriteOutputPacket(AVPacket* packet)
     {
         // Rescale timestamps
         packet->stream_index = output_stream_index_;
