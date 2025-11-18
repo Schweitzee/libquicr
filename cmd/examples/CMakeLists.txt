@@ -42,8 +42,50 @@ set_target_properties(qserver
 
 target_compile_definitions(qserver PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
 
+# ============================================================================
+# qc_transcode - Transcode client with CMAF support
+# ============================================================================
+
+# Find FFmpeg packages
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
+pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
+pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
+pkg_check_modules(SWSCALE REQUIRED IMPORTED_TARGET libswscale)
+
+add_executable(qc_transcode
+        qc_transcode.cpp
+        transcode_client.cpp
+)
+
+target_link_libraries(qc_transcode
+        PRIVATE
+        quicr
+        nlohmann_json::nlohmann_json
+        PkgConfig::AVCODEC
+        PkgConfig::AVFORMAT
+        PkgConfig::AVUTIL
+        PkgConfig::SWSCALE
+)
+
+target_include_directories(qc_transcode PRIVATE ../dependencies)
+
+target_compile_options(qc_transcode
+        PRIVATE
+        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>: -Wpedantic -Wextra -Wall>
+        $<$<CXX_COMPILER_ID:MSVC>: >)
+
+set_target_properties(qc_transcode
+        PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS OFF)
+
+target_compile_definitions(qc_transcode PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+
 if(LINT)
         include(Lint)
         Lint(qserver)
         Lint(qclient)
+        Lint(qc_transcode)
 endif()
