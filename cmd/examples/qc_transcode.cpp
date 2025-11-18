@@ -29,128 +29,44 @@ const std::filesystem::path kOutputDir = std::filesystem::current_path() / "tran
 } // namespace qtranscode_consts
 
 /**
- * @brief Subscribe track handler with transcoding support
- * @details This handler receives CMAF fragments and transcodes them.
- *          It demonstrates the minimal integration pattern for the TranscodeClient.
+ * @brief Simple subscribe track handler that passes data to transcode client
  */
-class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
+class MySubscribeTrackHandler : public quicr::SubscribeTrackHandler
 {
   public:
-    TranscodeSubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
-                                   quicr::messages::FilterType filter_type,
-                                   const std::optional<JoiningFetch>& joining_fetch,
-                                   const quicr::transcode::TranscodeConfig& config,
-                                   const std::string& output_file = "")
+    MySubscribeTrackHandler(const quicr::FullTrackName& full_track_name,
+                            quicr::messages::FilterType filter_type,
+                            const std::optional<JoiningFetch>& joining_fetch,
+                            std::shared_ptr<quicr::transcode::TranscodeClient> transcode_client)
       : SubscribeTrackHandler(full_track_name,
                               3,
                               quicr::messages::GroupOrder::kAscending,
                               filter_type,
                               joining_fetch,
                               false)
+      , transcode_client_(transcode_client)
     {
-        // Create output directory if needed
-        if (!output_file.empty()) {
-            std::filesystem::create_directories(qtranscode_consts::kOutputDir);
-            const auto output_path = qtranscode_consts::kOutputDir / (output_file + ".mp4");
-            output_file_.open(output_path, std::ios::binary | std::ios::trunc);
-            if (output_file_) {
-                SPDLOG_INFO("Writing transcoded output to: {}", output_path.string());
-            }
-        }
-
-        // Create transcode client with config
-        transcode_client_ = quicr::transcode::TranscodeClient::Create(config);
-
-        // Set output init callback
-        transcode_client_->SetOutputInitCallback([this](const uint8_t* data, size_t size) {
-            SPDLOG_INFO("Received transcoded init segment: {} bytes", size);
-
-            // Write to file if enabled
-            if (output_file_) {
-                output_file_.write(reinterpret_cast<const char*>(data), size);
-                output_file_.flush();
-            }
-
-            total_output_bytes_ += size;
-
-            // Forward to your publisher or next stage here
-            // Example: PublishTranscodedInit(data, size);
-        });
-
-        // Set output fragment callback
-        transcode_client_->SetOutputFragmentCallback([this](const uint8_t* data, size_t size) {
-            SPDLOG_DEBUG("Received transcoded fragment: {} bytes", size);
-
-            // Write to file if enabled
-            if (output_file_) {
-                output_file_.write(reinterpret_cast<const char*>(data), size);
-                output_file_.flush();
-            }
-
-            total_output_bytes_ += size;
-
-            // Forward to your publisher or next stage here
-            // Example: PublishTranscodedFragment(data, size);
-        });
-
-        SPDLOG_INFO("TranscodeSubscribeTrackHandler initialized ({}x{})",
-                    config.target_width,
-                    config.target_height);
-    }
-
-    virtual ~TranscodeSubscribeTrackHandler()
-    {
-        if (transcode_client_) {
-            transcode_client_->Flush();
-            transcode_client_->Close();
-        }
-
-        if (output_file_) {
-            output_file_.close();
-        }
-
-        SPDLOG_INFO("Transcoded {} fragments ({} bytes input, {} bytes output)",
-                    fragment_count_,
-                    total_input_bytes_,
-                    total_output_bytes_);
     }
 
     void ObjectReceived(const quicr::ObjectHeaders& hdr, quicr::BytesSpan data) override
     {
-        total_input_bytes_ += data.size();
+        if (!transcode_client_) {
+            return;
+        }
 
         SPDLOG_DEBUG("Received object Group:{}, Object:{}, Size:{} bytes", hdr.group_id, hdr.object_id, data.size());
 
-        // Detect if this is an init segment or a media fragment
-        // CMAF init segments start with ftyp box (0x66747970)
-        // Media fragments start with moof box (0x6D6F6F66)
+        // Detect CMAF segment type by box type
         if (data.size() >= 8) {
             uint32_t box_type = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
 
             if (box_type == 0x66747970) { // 'ftyp' - init segment
                 SPDLOG_INFO("Detected CMAF init segment (Group:{}, Object:{})", hdr.group_id, hdr.object_id);
-
-                if (!transcode_client_->PushInputInit(data.data(), data.size())) {
-                    SPDLOG_ERROR("Failed to push init segment: {}", transcode_client_->GetLastError());
-                    return;
-                }
-
-                init_received_ = true;
+                transcode_client_->PushInputInit(data.data(), data.size());
 
             } else if (box_type == 0x6D6F6F66) { // 'moof' - media fragment
-                if (!init_received_) {
-                    SPDLOG_WARN("Received fragment before init segment, skipping...");
-                    return;
-                }
-
                 SPDLOG_DEBUG("Processing CMAF fragment (Group:{}, Object:{})", hdr.group_id, hdr.object_id);
-
-                if (!transcode_client_->PushInputFragment(data.data(), data.size())) {
-                    SPDLOG_ERROR("Failed to push fragment: {}", transcode_client_->GetLastError());
-                    return;
-                }
-
-                fragment_count_++;
+                transcode_client_->PushInputFragment(data.data(), data.size());
             }
         }
     }
@@ -160,33 +76,21 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         switch (status) {
             case Status::kOk: {
                 if (auto track_alias = GetTrackAlias(); track_alias.has_value()) {
-                    SPDLOG_INFO("Transcode track alias: {} is ready", track_alias.value());
+                    SPDLOG_INFO("Track alias: {} is ready", track_alias.value());
                 }
             } break;
-
-            case Status::kError:
-                SPDLOG_ERROR("Transcode track error");
-                break;
 
             default:
                 break;
         }
     }
 
-    // Get access to the transcode client (if needed externally)
-    std::shared_ptr<quicr::transcode::TranscodeClient> GetTranscodeClient() { return transcode_client_; }
-
   private:
     std::shared_ptr<quicr::transcode::TranscodeClient> transcode_client_;
-    bool init_received_{ false };
-    size_t fragment_count_{ 0 };
-    size_t total_input_bytes_{ 0 };
-    size_t total_output_bytes_{ 0 };
-    std::ofstream output_file_;
 };
 
 /**
- * @brief Standard MoQ client (not transcoding-specific)
+ * @brief Standard MoQ client
  */
 class MyClient : public quicr::Client
 {
@@ -229,7 +133,7 @@ class MyClient : public quicr::Client
 
 /**
  * @brief Subscriber function with transcoding
- * @details Only this function is transcoding-aware. The client remains generic.
+ * @details ALL transcoding setup happens here
  */
 void
 DoSubscriber(const quicr::FullTrackName& full_track_name,
@@ -239,9 +143,49 @@ DoSubscriber(const quicr::FullTrackName& full_track_name,
              const quicr::transcode::TranscodeConfig& transcode_config,
              const std::string& output_file = "")
 {
-    // Create transcode-enabled track handler
-    const auto track_handler = std::make_shared<TranscodeSubscribeTrackHandler>(
-      full_track_name, filter_type, std::nullopt, transcode_config, output_file);
+    // 1. Create transcode client with config
+    auto transcode_client = quicr::transcode::TranscodeClient::Create(transcode_config);
+
+    // 2. Set up output file if needed
+    std::ofstream output_fs;
+    if (!output_file.empty()) {
+        std::filesystem::create_directories(qtranscode_consts::kOutputDir);
+        const auto output_path = qtranscode_consts::kOutputDir / (output_file + ".mp4");
+        output_fs.open(output_path, std::ios::binary | std::ios::trunc);
+        if (output_fs) {
+            SPDLOG_INFO("Writing transcoded output to: {}", output_path.string());
+        }
+    }
+
+    // 3. Set output init callback
+    transcode_client->SetOutputInitCallback([&output_fs](const uint8_t* data, size_t size) {
+        SPDLOG_INFO("Received transcoded init segment: {} bytes", size);
+
+        if (output_fs) {
+            output_fs.write(reinterpret_cast<const char*>(data), size);
+            output_fs.flush();
+        }
+
+        // Forward to your publisher or next stage here
+        // Example: PublishTranscodedInit(data, size);
+    });
+
+    // 4. Set output fragment callback
+    transcode_client->SetOutputFragmentCallback([&output_fs](const uint8_t* data, size_t size) {
+        SPDLOG_DEBUG("Received transcoded fragment: {} bytes", size);
+
+        if (output_fs) {
+            output_fs.write(reinterpret_cast<const char*>(data), size);
+            output_fs.flush();
+        }
+
+        // Forward to your publisher or next stage here
+        // Example: PublishTranscodedFragment(data, size);
+    });
+
+    // 5. Create track handler with transcode client
+    const auto track_handler =
+      std::make_shared<MySubscribeTrackHandler>(full_track_name, filter_type, std::nullopt, transcode_client);
 
     SPDLOG_INFO("Started transcode subscriber ({}x{})",
                 transcode_config.target_width,
@@ -260,6 +204,15 @@ DoSubscriber(const quicr::FullTrackName& full_track_name,
     }
 
     client->UnsubscribeTrack(track_handler);
+
+    // 6. Cleanup
+    transcode_client->Flush();
+    transcode_client->Close();
+
+    if (output_fs) {
+        output_fs.close();
+    }
+
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     SPDLOG_INFO("Transcode subscriber done");
@@ -363,10 +316,10 @@ main(int argc, char* argv[])
 
     std::unique_lock lock(moq_example::main_mutex);
 
-    // Initialize client config (standard, not transcoding-specific)
+    // Initialize client config (standard)
     quicr::ClientConfig client_config = InitConfig(result);
 
-    // Create transcode config (code-based configuration)
+    // Create transcode config (code-based)
     quicr::transcode::TranscodeConfig transcode_config;
     transcode_config.target_width = result["width"].as<uint32_t>();
     transcode_config.target_height = result["height"].as<uint32_t>();
@@ -386,7 +339,7 @@ main(int argc, char* argv[])
     try {
         bool stop_threads{ false };
 
-        // Create standard MoQ client (not transcoding-specific)
+        // Create standard MoQ client
         auto client = MyClient::Create(client_config, stop_threads);
 
         if (client->Connect() != quicr::Transport::Status::kConnecting) {
@@ -402,8 +355,7 @@ main(int argc, char* argv[])
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
-        // Start subscriber with transcoding
-        // Only DoSubscriber is transcoding-aware
+        // Start subscriber with transcoding (ALL setup in DoSubscriber)
         const auto& sub_track_name =
           quicr::example::MakeFullTrackName(result["sub_namespace"].as<std::string>(),
                                             result["sub_name"].as<std::string>());
