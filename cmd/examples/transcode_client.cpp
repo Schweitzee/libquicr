@@ -54,18 +54,14 @@ class TranscodeClient::Impl
             return false;
         }
 
-        // Store init segment for prepending to fragments
+        // Just store init segment - decoder will be created from first fragment
         init_segment_.assign(data, data + size);
+        ready_ = true;
 
-        // Initialize decoder on first init
-        if (!contexts_initialized_) {
-            if (!InitializeDecoder()) {
-                return false;
-            }
-            contexts_initialized_ = true;
+        if (config_.debug) {
+            SPDLOG_INFO("Stored init segment: {} bytes", size);
         }
 
-        ready_ = true;
         return true;
     }
 
@@ -151,151 +147,9 @@ class TranscodeClient::Impl
         }
 
         ready_ = false;
-        contexts_initialized_ = false;
         output_initialized_ = false;
     }
 
-    bool InitializeDecoder()
-    {
-        // Parse init segment to get codec info
-        AVFormatContext* temp_fmt_ctx = nullptr;
-        AVIOContext* temp_avio = nullptr;
-
-        // Create temporary IO context for init segment
-        const int avio_buffer_size = 32768;
-        uint8_t* avio_buffer = static_cast<uint8_t*>(av_malloc(avio_buffer_size));
-        if (!avio_buffer) {
-            last_error_ = "Failed to allocate AVIO buffer";
-            return false;
-        }
-
-        temp_avio = avio_alloc_context(avio_buffer,
-                                        avio_buffer_size,
-                                        0,
-                                        &init_segment_,
-                                        [](void* opaque, uint8_t* buf, int buf_size) -> int {
-                                            auto* vec = static_cast<std::vector<uint8_t>*>(opaque);
-                                            size_t to_read = std::min(static_cast<size_t>(buf_size), vec->size());
-                                            if (to_read == 0)
-                                                return AVERROR_EOF;
-                                            std::memcpy(buf, vec->data(), to_read);
-                                            vec->erase(vec->begin(), vec->begin() + to_read);
-                                            return static_cast<int>(to_read);
-                                        },
-                                        nullptr,
-                                        nullptr);
-
-        if (!temp_avio) {
-            av_free(avio_buffer);
-            last_error_ = "Failed to allocate temporary AVIO";
-            return false;
-        }
-
-        temp_fmt_ctx = avformat_alloc_context();
-        if (!temp_fmt_ctx) {
-            avio_context_free(&temp_avio);
-            last_error_ = "Failed to allocate temporary format context";
-            return false;
-        }
-
-        temp_fmt_ctx->pb = temp_avio;
-
-        int ret = avformat_open_input(&temp_fmt_ctx, nullptr, nullptr, nullptr);
-        if (ret < 0) {
-            av_freep(&temp_avio->buffer);
-            avio_context_free(&temp_avio);
-            avformat_free_context(temp_fmt_ctx);
-            char errbuf[AV_ERROR_MAX_STRING_SIZE];
-            av_strerror(ret, errbuf, sizeof(errbuf));
-            last_error_ = std::string("Failed to parse init segment: ") + errbuf;
-            return false;
-        }
-
-        ret = avformat_find_stream_info(temp_fmt_ctx, nullptr);
-        if (ret < 0) {
-            av_freep(&temp_avio->buffer);
-            avio_context_free(&temp_avio);
-            avformat_close_input(&temp_fmt_ctx);
-            last_error_ = "Failed to find stream info in init";
-            return false;
-        }
-
-        // Find video stream
-        int video_idx = -1;
-        for (unsigned int i = 0; i < temp_fmt_ctx->nb_streams; i++) {
-            if (temp_fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-                video_idx = i;
-                break;
-            }
-        }
-
-        if (video_idx < 0) {
-            av_freep(&temp_avio->buffer);
-            avio_context_free(&temp_avio);
-            avformat_close_input(&temp_fmt_ctx);
-            last_error_ = "No video stream found";
-            return false;
-        }
-
-        // Get codec parameters
-        AVCodecParameters* codecpar = temp_fmt_ctx->streams[video_idx]->codecpar;
-        input_time_base_ = temp_fmt_ctx->streams[video_idx]->time_base;
-
-        // Create decoder
-        const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
-        if (!decoder) {
-            av_freep(&temp_avio->buffer);
-            avio_context_free(&temp_avio);
-            avformat_close_input(&temp_fmt_ctx);
-            last_error_ = "Failed to find decoder";
-            return false;
-        }
-
-        decoder_ctx_ = avcodec_alloc_context3(decoder);
-        if (!decoder_ctx_) {
-            av_freep(&temp_avio->buffer);
-            avio_context_free(&temp_avio);
-            avformat_close_input(&temp_fmt_ctx);
-            last_error_ = "Failed to allocate decoder context";
-            return false;
-        }
-
-        ret = avcodec_parameters_to_context(decoder_ctx_, codecpar);
-        if (ret < 0) {
-            avcodec_free_context(&decoder_ctx_);
-            av_freep(&temp_avio->buffer);
-            avio_context_free(&temp_avio);
-            avformat_close_input(&temp_fmt_ctx);
-            last_error_ = "Failed to copy codec parameters";
-            return false;
-        }
-
-        ret = avcodec_open2(decoder_ctx_, decoder, nullptr);
-        if (ret < 0) {
-            avcodec_free_context(&decoder_ctx_);
-            av_freep(&temp_avio->buffer);
-            avio_context_free(&temp_avio);
-            avformat_close_input(&temp_fmt_ctx);
-            char errbuf[AV_ERROR_MAX_STRING_SIZE];
-            av_strerror(ret, errbuf, sizeof(errbuf));
-            last_error_ = std::string("Failed to open decoder: ") + errbuf;
-            return false;
-        }
-
-        if (config_.debug) {
-            SPDLOG_INFO("Decoder initialized: {}x{} codec: {}",
-                        codecpar->width,
-                        codecpar->height,
-                        avcodec_get_name(codecpar->codec_id));
-        }
-
-        // Cleanup temporary context
-        av_freep(&temp_avio->buffer);
-        avio_context_free(&temp_avio);
-        avformat_close_input(&temp_fmt_ctx);
-
-        return true;
-    }
 
     bool ProcessFragment(const uint8_t* data, size_t size)
     {
@@ -350,7 +204,93 @@ class TranscodeClient::Impl
             av_freep(&frag_avio->buffer);
             avio_context_free(&frag_avio);
             avformat_free_context(frag_fmt_ctx);
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            last_error_ = std::string("Failed to open fragment: ") + errbuf;
             return false;
+        }
+
+        // Find stream info (now has actual frame data from fragment)
+        ret = avformat_find_stream_info(frag_fmt_ctx, nullptr);
+        if (ret < 0) {
+            av_freep(&frag_avio->buffer);
+            avio_context_free(&frag_avio);
+            avformat_close_input(&frag_fmt_ctx);
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            last_error_ = std::string("Failed to find stream info: ") + errbuf;
+            return false;
+        }
+
+        // Create decoder from first fragment if not already created
+        if (!decoder_ctx_) {
+            // Find video stream
+            int video_idx = -1;
+            for (unsigned int i = 0; i < frag_fmt_ctx->nb_streams; i++) {
+                if (frag_fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                    video_idx = i;
+                    break;
+                }
+            }
+
+            if (video_idx < 0) {
+                av_freep(&frag_avio->buffer);
+                avio_context_free(&frag_avio);
+                avformat_close_input(&frag_fmt_ctx);
+                last_error_ = "No video stream found";
+                return false;
+            }
+
+            AVCodecParameters* codecpar = frag_fmt_ctx->streams[video_idx]->codecpar;
+            input_time_base_ = frag_fmt_ctx->streams[video_idx]->time_base;
+
+            const AVCodec* decoder = avcodec_find_decoder(codecpar->codec_id);
+            if (!decoder) {
+                av_freep(&frag_avio->buffer);
+                avio_context_free(&frag_avio);
+                avformat_close_input(&frag_fmt_ctx);
+                last_error_ = "Failed to find decoder";
+                return false;
+            }
+
+            decoder_ctx_ = avcodec_alloc_context3(decoder);
+            if (!decoder_ctx_) {
+                av_freep(&frag_avio->buffer);
+                avio_context_free(&frag_avio);
+                avformat_close_input(&frag_fmt_ctx);
+                last_error_ = "Failed to allocate decoder context";
+                return false;
+            }
+
+            ret = avcodec_parameters_to_context(decoder_ctx_, codecpar);
+            if (ret < 0) {
+                avcodec_free_context(&decoder_ctx_);
+                av_freep(&frag_avio->buffer);
+                avio_context_free(&frag_avio);
+                avformat_close_input(&frag_fmt_ctx);
+                last_error_ = "Failed to copy codec parameters";
+                return false;
+            }
+
+            ret = avcodec_open2(decoder_ctx_, decoder, nullptr);
+            if (ret < 0) {
+                avcodec_free_context(&decoder_ctx_);
+                av_freep(&frag_avio->buffer);
+                avio_context_free(&frag_avio);
+                avformat_close_input(&frag_fmt_ctx);
+                char errbuf[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                last_error_ = std::string("Failed to open decoder: ") + errbuf;
+                return false;
+            }
+
+            if (config_.debug) {
+                SPDLOG_INFO("Decoder initialized: {}x{} pix_fmt: {} codec: {}",
+                            decoder_ctx_->width,
+                            decoder_ctx_->height,
+                            av_get_pix_fmt_name(decoder_ctx_->pix_fmt),
+                            avcodec_get_name(codecpar->codec_id));
+            }
         }
 
         // Read packets and decode
@@ -638,7 +578,6 @@ class TranscodeClient::Impl
   private:
     TranscodeConfig config_;
     bool ready_{ false };
-    bool contexts_initialized_{ false };
     std::string last_error_;
 
     // Init segment storage (for prepending to fragments)
