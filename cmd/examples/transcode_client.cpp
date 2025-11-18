@@ -104,6 +104,15 @@ class TranscodeClient::Impl
             av_write_trailer(output_fmt_ctx_);
         }
 
+        // Send any remaining complete fragments
+        SendCompleteFragments();
+
+        // Send any remaining data (trailer, etc.)
+        if (output_fragment_cb_ && !output_buffer_.empty()) {
+            output_fragment_cb_(output_buffer_.data(), output_buffer_.size());
+            output_buffer_.clear();
+        }
+
         return true;
     }
 
@@ -197,6 +206,73 @@ class TranscodeClient::Impl
 
         state->pos = static_cast<size_t>(new_pos);
         return new_pos;
+    }
+
+    /**
+     * @brief Find complete moof+mdat fragments in the output buffer
+     * @return Size of complete fragments (0 if none complete)
+     */
+    size_t FindCompleteFragments()
+    {
+        if (output_buffer_.size() < 8) {
+            return 0;
+        }
+
+        size_t pos = 0;
+        size_t last_complete_fragment_end = 0;
+        bool in_moof = false;
+        size_t moof_start = 0;
+
+        while (pos + 8 <= output_buffer_.size()) {
+            // Read box size (big-endian)
+            uint32_t box_size = (static_cast<uint32_t>(output_buffer_[pos]) << 24) |
+                               (static_cast<uint32_t>(output_buffer_[pos + 1]) << 16) |
+                               (static_cast<uint32_t>(output_buffer_[pos + 2]) << 8) |
+                               (static_cast<uint32_t>(output_buffer_[pos + 3]));
+
+            // Read box type
+            uint32_t box_type = (static_cast<uint32_t>(output_buffer_[pos + 4]) << 24) |
+                               (static_cast<uint32_t>(output_buffer_[pos + 5]) << 16) |
+                               (static_cast<uint32_t>(output_buffer_[pos + 6]) << 8) |
+                               (static_cast<uint32_t>(output_buffer_[pos + 7]));
+
+            if (box_size == 0 || pos + box_size > output_buffer_.size()) {
+                // Incomplete box
+                break;
+            }
+
+            // 'moof' = 0x6D6F6F66
+            if (box_type == 0x6D6F6F66) {
+                in_moof = true;
+                moof_start = pos;
+            }
+            // 'mdat' = 0x6D646174
+            else if (box_type == 0x6D646174 && in_moof) {
+                // Complete moof+mdat fragment
+                last_complete_fragment_end = pos + box_size;
+                in_moof = false;
+            }
+
+            pos += box_size;
+        }
+
+        return last_complete_fragment_end;
+    }
+
+    /**
+     * @brief Send any complete fragments from output buffer
+     */
+    void SendCompleteFragments()
+    {
+        if (!output_fragment_cb_ || output_buffer_.empty()) {
+            return;
+        }
+
+        size_t complete_size = FindCompleteFragments();
+        if (complete_size > 0) {
+            output_fragment_cb_(output_buffer_.data(), complete_size);
+            output_buffer_.erase(output_buffer_.begin(), output_buffer_.begin() + complete_size);
+        }
     }
 
     bool ProcessFragment(const uint8_t* data, size_t size)
@@ -357,11 +433,8 @@ class TranscodeClient::Impl
         avio_context_free(&frag_avio);
         avformat_close_input(&frag_fmt_ctx);
 
-        // Send output if available
-        if (output_fragment_cb_ && !output_buffer_.empty()) {
-            output_fragment_cb_(output_buffer_.data(), output_buffer_.size());
-            output_buffer_.clear();
-        }
+        // Send only complete moof+mdat fragments
+        SendCompleteFragments();
 
         return true;
     }
@@ -396,8 +469,16 @@ class TranscodeClient::Impl
         // Set encoder parameters
         encoder_ctx_->width = out_width;
         encoder_ctx_->height = out_height;
-        encoder_ctx_->time_base = input_time_base_;
-        encoder_ctx_->framerate = decoder_ctx_->framerate;
+
+        // Use framerate-based time_base for proper timing
+        // With time_base = 1/fps and PTS incrementing by 1, each frame has correct duration
+        AVRational framerate = decoder_ctx_->framerate;
+        if (framerate.num == 0 || framerate.den == 0) {
+            // Default to 30fps if framerate not available
+            framerate = AVRational{30, 1};
+        }
+        encoder_ctx_->time_base = AVRational{framerate.den, framerate.num};
+        encoder_ctx_->framerate = framerate;
         encoder_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
 
         if (config_.target_bitrate > 0) {
@@ -408,6 +489,9 @@ class TranscodeClient::Impl
 
         encoder_ctx_->gop_size = 30;
         encoder_ctx_->max_b_frames = 0;
+
+        // Required for fragmented MP4 - extracts SPS/PPS for avcC box
+        encoder_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
         av_opt_set(encoder_ctx_->priv_data, "preset", config_.encoder_preset.c_str(), 0);
         av_opt_set(encoder_ctx_->priv_data, "tune", "zerolatency", 0);
