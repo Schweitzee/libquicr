@@ -3,6 +3,8 @@
 
 #include "transcode_client.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -103,10 +105,8 @@ class TranscodeClient::Impl
             return false;
         }
 
-        // Initialize output context
-        if (!InitializeOutputContext()) {
-            return false;
-        }
+        // Note: We delay output context initialization until we decode the first frame
+        // because we need to know the pixel format from actual frame data
 
         ready_ = true;
         return true;
@@ -574,6 +574,14 @@ class TranscodeClient::Impl
 
     void ProcessFrame(AVFrame* frame)
     {
+        // Lazy initialization: set up output on first frame
+        if (!output_initialized_) {
+            if (!InitializeOutputContext()) {
+                SPDLOG_ERROR("Failed to initialize output context: {}", last_error_);
+                return;
+            }
+        }
+
         // Scale frame
         sws_scale(sws_ctx_,
                   frame->data,
