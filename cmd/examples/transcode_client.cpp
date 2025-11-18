@@ -150,6 +150,54 @@ class TranscodeClient::Impl
         output_initialized_ = false;
     }
 
+    // Buffer state for AVIO callbacks
+    struct BufferState {
+        const uint8_t* data;
+        size_t size;
+        size_t pos;
+    };
+
+    static int ReadBuffer(void* opaque, uint8_t* buf, int buf_size)
+    {
+        auto* state = static_cast<BufferState*>(opaque);
+        size_t remaining = state->size - state->pos;
+        if (remaining == 0) {
+            return AVERROR_EOF;
+        }
+        size_t to_read = std::min(static_cast<size_t>(buf_size), remaining);
+        std::memcpy(buf, state->data + state->pos, to_read);
+        state->pos += to_read;
+        return static_cast<int>(to_read);
+    }
+
+    static int64_t SeekBuffer(void* opaque, int64_t offset, int whence)
+    {
+        auto* state = static_cast<BufferState*>(opaque);
+        int64_t new_pos;
+
+        switch (whence) {
+            case SEEK_SET:
+                new_pos = offset;
+                break;
+            case SEEK_CUR:
+                new_pos = static_cast<int64_t>(state->pos) + offset;
+                break;
+            case SEEK_END:
+                new_pos = static_cast<int64_t>(state->size) + offset;
+                break;
+            case AVSEEK_SIZE:
+                return static_cast<int64_t>(state->size);
+            default:
+                return AVERROR(EINVAL);
+        }
+
+        if (new_pos < 0 || new_pos > static_cast<int64_t>(state->size)) {
+            return AVERROR(EINVAL);
+        }
+
+        state->pos = static_cast<size_t>(new_pos);
+        return new_pos;
+    }
 
     bool ProcessFragment(const uint8_t* data, size_t size)
     {
@@ -158,6 +206,9 @@ class TranscodeClient::Impl
         combined.reserve(init_segment_.size() + size);
         combined.insert(combined.end(), init_segment_.begin(), init_segment_.end());
         combined.insert(combined.end(), data, data + size);
+
+        // Create buffer state for AVIO
+        BufferState buffer_state{ combined.data(), combined.size(), 0 };
 
         // Parse combined data
         AVFormatContext* frag_fmt_ctx = nullptr;
@@ -170,21 +221,14 @@ class TranscodeClient::Impl
             return false;
         }
 
+        // Use position-based read with seek support
         frag_avio = avio_alloc_context(avio_buffer,
                                         avio_buffer_size,
                                         0,
-                                        &combined,
-                                        [](void* opaque, uint8_t* buf, int buf_size) -> int {
-                                            auto* vec = static_cast<std::vector<uint8_t>*>(opaque);
-                                            size_t to_read = std::min(static_cast<size_t>(buf_size), vec->size());
-                                            if (to_read == 0)
-                                                return AVERROR_EOF;
-                                            std::memcpy(buf, vec->data(), to_read);
-                                            vec->erase(vec->begin(), vec->begin() + to_read);
-                                            return static_cast<int>(to_read);
-                                        },
+                                        &buffer_state,
+                                        ReadBuffer,
                                         nullptr,
-                                        nullptr);
+                                        SeekBuffer);
 
         if (!frag_avio) {
             av_free(avio_buffer);
@@ -221,6 +265,11 @@ class TranscodeClient::Impl
             last_error_ = std::string("Failed to find stream info: ") + errbuf;
             return false;
         }
+
+        // Seek back to start so av_read_frame can read the packets
+        // (avformat_find_stream_info consumed data while probing)
+        buffer_state.pos = 0;
+        avio_seek(frag_avio, 0, SEEK_SET);
 
         // Create decoder from first fragment if not already created
         if (!decoder_ctx_) {
