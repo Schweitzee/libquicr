@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 
+using json = nlohmann::json; // NOLINT
+
 enum class TranscodePriority {
     Low,
     Normal,
@@ -354,29 +356,6 @@ TranscodeRequest parse_transcode_request(const json& j)
         req.operations.push_back(parse_single_operation(opj));
     }
 
-    // --- constraints (opcionális) ---
-    if (j.contains("constraints")) {
-        const nlohmann::json& jc = j.at("constraints");
-        TranscodeConstraints c;
-
-        if (jc.contains("max_latency_ms")) {
-            auto v = jc.at("max_latency_ms").get<std::uint32_t>();
-            if (v == 0) {
-                throw std::invalid_argument("constraints.max_latency_ms must be > 0");
-            }
-            c.max_latency_ms = v;
-        }
-
-        if (jc.contains("priority")) {
-            std::string p = jc.at("priority").get<std::string>();
-            c.priority = parse_priority(p);
-        }
-
-        // akkor állítsuk be az optional-t, ha legalább egy mező van
-        if (c.max_latency_ms.has_value() || c.priority.has_value()) {
-            req.constraints = std::move(c);
-        }
-    }
 
     // --- VALIDÁCIÓ: csak egy media type ---
     validate_single_media_type(req);

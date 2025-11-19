@@ -674,7 +674,13 @@ PublishChunk(std::shared_ptr<TrackPublishData> TrackPublishData,
             continue;
         }
 
-        if (chunk.has_keyframe) { //
+        if (TrackPublishData->track_type == TrackType::VIDEO) { //
+            if (chunk.has_keyframe) {
+                TrackPublishData->group_id++;
+                TrackPublishData->object_id = 0;
+                TrackPublishData->subgroup_id = 0;
+            }
+        } else if (TrackPublishData->object_id == 25) {
             TrackPublishData->group_id++;
             TrackPublishData->object_id = 0;
             TrackPublishData->subgroup_id = 0;
@@ -757,10 +763,6 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
     //  }
     cfg.input_url = ("pipe:0"); // in.string();
 
-    // fragmentálás finomhangolás (lásd lent)
-    cfg.frag_on_key = true;        // maradhat, ha kicsi a GOP
-    cfg.frag_duration_us = 250000; // 250 ms: gyakoribb moof-ok
-    cfg.min_frag_duration_us = 200000;
     cfg.realtime_pace = true;
     cfg.protocol_whitelist = "file,pipe,data,crypto,subfile";
 
@@ -842,6 +844,7 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
 
     if (splitter_thread.joinable()) {
         splitter_thread.join();
+        SPDLOG_INFO("splitter thread joined");
     }
 
     for (auto val : shared_state->tracks | std::views::values) {
@@ -849,15 +852,16 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
     }
     for (auto& t : track_threads) {
         try {
-            t.join();
+            if (t.joinable()) {
+                t.join();
+                SPDLOG_INFO("track thread joined");
+            }
+
         } catch (...) {
             SPDLOG_WARN("Exception while joining a track thread (ignored)");
         }
     }
 
-    // if (publisher_thread.joinable()) {
-    //     publisher_thread.join();
-    // }
 
     for (auto& th : TrackHandlers) {
         try {
@@ -1461,12 +1465,6 @@ main(int argc, char* argv[])
             } else {
                 auto shared_state = std::make_shared<PublisherSharedState>();
 
-                bool stop_parse{ false };
-
-                // parse_thread = std::thread(DoParse, shared_state, std::ref(stop_parse));
-
-                // shared_state->WaitForCatalogReady(stop_threads);
-
                 if (result["pub_namespace"].as<std::string>() != "") {
                     shared_state->catalog.namespace_ = result["pub_namespace"].as<std::string>();
                 } else {
@@ -1524,9 +1522,6 @@ main(int argc, char* argv[])
 
         stop_threads = true;
         SPDLOG_ERROR("Stopping threads...");
-        // if (parse_thread.joinable()) {
-        //     parse_thread.join();
-        // }
 
         if (pub_thread.joinable()) {
             pub_thread.join();

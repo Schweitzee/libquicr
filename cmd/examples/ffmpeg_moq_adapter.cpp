@@ -2,6 +2,8 @@
 #include "ffmpeg_moq_adapter.h"
 
 #include "base64_tool.h"
+#include "transcode_request.h"
+
 #include <stdexcept>
 
 
@@ -25,8 +27,15 @@ FfmpegToMoQAdapter::OnInit(int stream_index, const uint8_t* init, size_t init_le
 
     SPDLOG_DEBUG("parsed track data: name={0} idx={1} type={2}\n", track.name, track.idx, track.type);
 
+    TrackType tt;
+    if (track.type == "video") tt = TrackType::VIDEO;
+    else if (track.type == "audio") tt = TrackType::AUDIO;
+    else if (track.type == "subtitle") tt = TrackType::SUBTITLE;
+    else tt = TrackType::ELSE;
+
     // for the buffer
     auto tpd = std::make_shared<TrackPublishData>();
+    tpd->track_type = tt;
     tpd->track_name = track.name;
     tpd->track_id = stream_index;
 

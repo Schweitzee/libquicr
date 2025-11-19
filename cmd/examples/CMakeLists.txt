@@ -142,7 +142,9 @@ add_executable(qc_transcode
         CatalogSubscribeTrackHandler.h
         base64_tool.h
         helper_functions.h
-        transcode_request.h)
+        transcode_request.h
+        transcode_client.cpp
+        transcode_client.h)
 
 target_link_libraries(qc_transcode PRIVATE
         quicr

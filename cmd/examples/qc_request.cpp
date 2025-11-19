@@ -985,13 +985,6 @@ main(int argc, char* argv[])
 
         stop_threads = true;
         SPDLOG_ERROR("Stopping threads...");
-        // if (parse_thread.joinable()) {
-        //     parse_thread.join();
-        // }
-
-        if (pub_thread.joinable()) {
-            pub_thread.join();
-        }
 
         if (sub_thread.joinable()) {
             sub_thread.join();

@@ -51,6 +51,8 @@ class TrackPublishData
 
     std::string track_name;
 
+    TrackType track_type;
+
     std::condition_variable cv;
 
     uint64_t group_id{ 0 };

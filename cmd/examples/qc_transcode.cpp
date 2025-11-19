@@ -13,9 +13,9 @@
 #include <quicr/object.h>
 
 #include "helper_functions.h"
-#include <quicr/defer.h>
-#include <quicr/cache.h>
 #include "signal_handler.h"
+#include <quicr/cache.h>
+#include <quicr/defer.h>
 
 #include <filesystem>
 #include <format>
@@ -37,12 +37,12 @@
 
 #include <termios.h>
 
+#include "CatalogSubscribeTrackHandler.h"
+#include "TranscodeSubscribeTrackHandler.h"
 #include "base64_tool.h"
 #include "media.h"
 #include "subscriber_util.h"
-#include "CatalogSubscribeTrackHandler.h"
-#include "TranscodeSubscribeTrackHandler.h"
-#include "video_transcode_handler.h"
+#include "transcode_client.h"
 
 #include <set>
 
@@ -96,7 +96,6 @@ namespace qclient_vars {
 namespace qclient_consts {
     const std::filesystem::path kMoqDataDir = std::filesystem::current_path() / "moq_data";
 }
-
 
 class MyFetchTrackHandler : public quicr::FetchTrackHandler
 {
@@ -160,9 +159,9 @@ class VideoPublishTrackHandler : public quicr::PublishTrackHandler
 {
   public:
     VideoPublishTrackHandler(const quicr::FullTrackName& full_track_name,
-                          quicr::TrackMode track_mode,
-                          uint8_t default_priority,
-                          uint32_t default_ttl)
+                             quicr::TrackMode track_mode,
+                             uint8_t default_priority,
+                             uint32_t default_ttl)
       : quicr::PublishTrackHandler(full_track_name, track_mode, default_priority, default_ttl)
     {
     }
@@ -473,7 +472,10 @@ class MyClient : public quicr::Client
 
         // Bind publish initiated handler.
         const auto track_handler = std::make_shared<CatalogSubscribeTrackHandler>(
-          publish_attributes.track_full_name, quicr::messages::FilterType::kLargestObject, std::nullopt, nullptr); //TODO: solve the automated subscribe handler initiation
+          publish_attributes.track_full_name,
+          quicr::messages::FilterType::kLargestObject,
+          std::nullopt,
+          nullptr); // TODO: solve the automated subscribe handler initiation
         track_handler->SetRequestId(request_id);
         track_handler->SetReceivedTrackAlias(publish_attributes.track_alias);
         track_handler->SetPriority(publish_attributes.priority);
@@ -495,7 +497,6 @@ class MyClient : public quicr::Client
     bool& stop_threads_;
 };
 
-
 /*===========================================================================*/
 // Subscriber thread to perform subscribe
 /*===========================================================================*/
@@ -511,14 +512,12 @@ DoSubscriber(const std::string& track_namespace,
     using Fetch = quicr::SubscribeTrackHandler::JoiningFetch;
     const auto joining_fetch = join_fetch.has_value()
                                  ? Fetch{ 4, quicr::messages::GroupOrder::kAscending, {}, *join_fetch, absolute }
-    : std::optional<Fetch>(std::nullopt);
-
-
+                                 : std::optional<Fetch>(std::nullopt);
 
     auto sub_util = std::make_shared<SubscriberUtil>();
 
     // 1) KATALÓGUS FELIRATKOZÁS
-    auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace+",catalog", "publisher");
+    auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace + ",catalog", "publisher");
     const auto catalog_track_handler = std::make_shared<CatalogSubscribeTrackHandler>(
       catalog_full_track_name, messages::FilterType::kLargestObject, joining_fetch, sub_util);
 
@@ -533,7 +532,6 @@ DoSubscriber(const std::string& track_namespace,
         return;
     }
 
-
     SPDLOG_INFO("Waiting for catalog");
     while (!stop && sub_util->catalog_read == false) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -546,12 +544,12 @@ DoSubscriber(const std::string& track_namespace,
     auto it = tracks.begin();
     auto end = tracks.end();
 
-    while (it != end && it->name != "video1") {
+    while (it != end && it->type != "video") {
         ++it;
     }
 
     if (it == end) {
-        SPDLOG_ERROR("Track 'video1' not found in catalog");
+        SPDLOG_ERROR("Track 'video' not found in catalog");
         return;
     }
 
@@ -560,44 +558,39 @@ DoSubscriber(const std::string& track_namespace,
     subtrack->namespace_ = track_namespace;
     subtrack->init = base64::decode_to_uint8_vec(it->b64_init_data);
 
+    transcode::TranscodeConfig transcode_config = transcode::TranscodeConfig();
+    transcode_config.target_height = 72;
+    transcode_config.target_width = 128;
 
-    TranscodeConfig cfg;
-    cfg.targetWidth  = 1280;
-    cfg.targetHeight = 720;
-    cfg.codecId      = AV_CODEC_ID_H264;
-    cfg.bitrate      = 2'000'000;
+    auto transcode_client = quicr::transcode::TranscodeClient::Create(transcode_config);
+    // 3. Set output init callback
+    transcode_client->SetOutputInitCallback([](const uint8_t* data, size_t size) {
+        SPDLOG_INFO("Received transcoded init segment: {} bytes", size);
 
-    TranscodeOutputCallbacks cbs;
-    cbs.onInitSegment = [](const uint8_t* data, size_t size) {
-        SPDLOG_INFO("Output init segment ready: {} bytes", size);
         fwrite(data, size, 1, stdout);
         fflush(stdout);
-    };
-    cbs.onFragment = [](const uint8_t* data, size_t size) {
-        SPDLOG_INFO("Transcoded fragment: {} bytes",
-                    size);
+    });
+
+    transcode_client->SetOutputFragmentCallback([&](const uint8_t* data, size_t size) {
+        SPDLOG_DEBUG("Received transcoded fragment: {} bytes", size);
+
         fwrite(data, size, 1, stdout);
         fflush(stdout);
-    };
+    });
 
-    std::shared_ptr<CmafTranscoderMoQ> transcoder = std::make_shared<CmafTranscoderMoQ>(cfg, cbs);
-
-    auto track_handler = std::make_shared<TranscodeSubscribeTrackHandler>(quicr::example::MakeFullTrackName(subtrack->track_entry.track_namespace_, it->name),
-        quicr::messages::FilterType::kNextGroupStart,
-        joining_fetch,
-        subtrack,
-        transcoder);
-
-
+    auto track_handler = std::make_shared<TranscodeSubscribeTrackHandler>(
+      quicr::example::MakeFullTrackName(subtrack->track_entry.track_namespace_, it->name),
+      quicr::messages::FilterType::kNextGroupStart,
+      joining_fetch,
+      subtrack,
+      transcode_client);
 
     std::cerr << "Input Init" << std::endl;
     quicr::BytesSpan init_span_in = quicr::BytesSpan(subtrack->init.data(), subtrack->init.size());
     fwrite(init_span_in.data(), init_span_in.size(), 1, stderr);
     fflush(stderr);
 
-
-    transcoder->pushInitSegment(init_span_in.data(), init_span_in.size());
-
+    transcode_client->PushInputInit(init_span_in.data(), init_span_in.size());
 
     // Now subscribe to the track
     client->SubscribeTrack(track_handler);
@@ -610,11 +603,13 @@ DoSubscriber(const std::string& track_namespace,
     client->UnsubscribeTrack(track_handler);
     client->UnsubscribeTrack(catalog_track_handler);
 
+    transcode_client->Flush();
+    transcode_client->Close();
+
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     SPDLOG_INFO("Subscriber done track");
     moq_example::terminate = true;
 }
-
 
 /*===========================================================================*/
 // Main program
@@ -661,7 +656,6 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
         SPDLOG_INFO("Running in clock publish mode");
         qclient_vars::publish_clock = true;
     }
-
 
     if (cli_opts.count("sub_namespace") && cli_opts.count("sub_name")) {
         enable_sub = true;
@@ -727,7 +721,7 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
 int
 main(int argc, char* argv[])
 {
-    //Initialize logger inside a function
+    // Initialize logger inside a function
     logger = spdlog::stderr_color_mt("err_logger");
     spdlog::set_default_logger(logger);
 
@@ -815,15 +809,14 @@ main(int argc, char* argv[])
 
         std::thread sub_thread;
 
-        //Subscribe to announces in the "[sub_namespace].transcode.requests" namespace
+        // Subscribe to announces in the "[sub_namespace].transcode.requests" namespace
         std::string prefix_ns_str = result["sub_namespace"].as<std::string>() + ".transcode.requests";
         const auto& prefix_ns = quicr::example::MakeFullTrackName(prefix_ns_str, "");
 
         auto th = quicr::TrackHash(prefix_ns);
 
-        SPDLOG_INFO("Sending subscribe announces for prefix '{}' namespace_hash: {}",
-                    prefix_ns_str,
-                    th.track_namespace_hash);
+        SPDLOG_INFO(
+          "Sending subscribe announces for prefix '{}' namespace_hash: {}", prefix_ns_str, th.track_namespace_hash);
 
         client->SubscribeNamespace(prefix_ns.name_space);
 
@@ -862,7 +855,6 @@ main(int argc, char* argv[])
 
         stop_threads = true;
         SPDLOG_ERROR("Stopping threads...");
-
 
         if (sub_thread.joinable()) {
             sub_thread.join();

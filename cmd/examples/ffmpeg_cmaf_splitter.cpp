@@ -310,15 +310,11 @@ FfmpegCmafSplitter::make_writer_for_stream(AVStream* in_st)
 
     // Alap movflags
     std::string flags = "empty_moov+cmaf+separate_moof+skip_trailer+faststart";
-    SPDLOG_INFO("frag_on_key: {}", cfg_.frag_on_key);
-    if (in_st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && cfg_.frag_on_key) {
-        flags += "+frag_keyframe+frag_every_frame";
+    if (in_st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        flags += "+frag_every_frame";
+        av_dict_set_int(&movopts, "video_track_timescale", 90000, 0);
     }
     av_dict_set(&movopts, "movflags", flags.c_str(), 0);
-
-    // Időalapú fragmentálás (us)
-    av_dict_set_int(&movopts, "frag_duration", cfg_.frag_duration_us, 0);
-    av_dict_set_int(&movopts, "min_frag_duration", cfg_.min_frag_duration_us, 0);
 
     // Flush viselkedés
     av_dict_set(&movopts, "flush_packets", "1", 0);
@@ -364,6 +360,7 @@ FfmpegCmafSplitter::make_writer_for_stream(AVStream* in_st)
         throw std::runtime_error("write_header failed");
     }
     av_dict_free(&movopts);
+    avio_flush(tw->oc->pb);
     tw->header_written = true;
     return tw;
 }
@@ -381,6 +378,7 @@ FfmpegCmafSplitter::Run(const std::atomic<bool>& stop)
         av_dict_set_int(&opts, "probesize", cfg_.probesize, 0);
     if (cfg_.analyzeduration_us > 0)
         av_dict_set_int(&opts, "analyzeduration", cfg_.analyzeduration_us, 0);
+    av_dict_set(&opts, "ignore_editlist", "1", 0);
     av_dict_set(&opts, "flush_packets", "1", 0);
     av_dict_set(&opts, "fflags", "nobuffer+fastseek+flush_packets", 0);
 
