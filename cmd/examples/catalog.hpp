@@ -284,38 +284,78 @@ public:
                 }
                 tracks_.push_back(std::move(e));
 
-            } else if (op == "remove" && path.rfind("/tracks/", 0) == 0) {
-                // Track eltávolítása index alapján
-                std::string index_str = path.substr(8); // "/tracks/" után
-                try {
-                    size_t index = std::stoul(index_str);
-                    if (index < tracks_.size()) {
-                        tracks_.erase(tracks_.begin() + index);
-                    } else {
-                        throw std::invalid_argument("Invalid track index in remove operation: " + index_str);
+            } else if (op == "remove" && path == "/tracks/-") {
+                // Track eltávolítása név (és opcionálisan namespace) alapján
+                if (!operation.contains("value")) {
+                    throw std::invalid_argument("Remove operation requires 'value' with track identification");
+                }
+
+                const nlohmann::json& jt = operation.at("value");
+                if (!jt.contains("name") || !jt.contains("type")) {
+                    throw std::invalid_argument("Remove operation value must contain 'name' and 'type'");
+                }
+
+                std::string remove_name = jt.at("name").get<std::string>();
+                std::string remove_type = jt.at("type").get<std::string>();
+                std::optional<std::string> remove_namespace;
+
+                if (jt.contains("namespace")) {
+                    remove_namespace = jt.at("namespace").get<std::string>();
+                }
+
+                // Keressük meg a track-et
+                auto it = std::find_if(tracks_.begin(), tracks_.end(), [&](const CatalogTrackEntry& e) {
+                    bool name_match = (e.name == remove_name);
+                    bool type_match = (CatalogTrackEntry::lowercase(e.type) == CatalogTrackEntry::lowercase(remove_type));
+                    bool namespace_match = true;
+
+                    if (remove_namespace.has_value()) {
+                        namespace_match = (e.track_namespace_ == remove_namespace.value());
                     }
-                } catch (const std::exception&) {
-                    throw std::invalid_argument("Invalid track index in remove operation: " + index_str);
+
+                    return name_match && type_match && namespace_match;
+                });
+
+                if (it != tracks_.end()) {
+                    tracks_.erase(it);
+                } else {
+                    std::string err_msg = "Track not found for removal: name=" + remove_name + ", type=" + remove_type;
+                    if (remove_namespace.has_value()) {
+                        err_msg += ", namespace=" + remove_namespace.value();
+                    }
+                    throw std::invalid_argument(err_msg);
                 }
 
             } else {
-                throw std::invalid_argument("Delta update only supports adding tracks (op=add, path=/tracks/-) or removing tracks (op=remove, path=/tracks/N). Got: op=" + op + ", path=" + path);
+                throw std::invalid_argument("Delta update only supports adding tracks (op=add, path=/tracks/-) or removing tracks (op=remove, path=/tracks/-, value={name, type, [namespace]}). Got: op=" + op + ", path=" + path);
             }
         }
     }
 
-    // **Új funkció**: Katalógus patch készítése egy track entry-ből (track hozzáadásához)
-    static std::string makeCatalogPatch(const CatalogTrackEntry& entry, bool remove = false, int remove_index = -1) {
+    // **Új funkció**: Katalógus patch készítése egy track entry-ből
+    static std::string makeCatalogPatch(const CatalogTrackEntry& entry, bool remove = false) {
         nlohmann::json patch = nlohmann::json::array();
 
         if (remove) {
-            // Track eltávolítása
-            if (remove_index < 0) {
-                throw std::invalid_argument("makeCatalogPatch: remove_index must be >= 0 when remove=true");
+            // Track eltávolítása név és típus alapján (opcionálisan namespace-szel)
+            if (entry.name.empty() || entry.type.empty()) {
+                throw std::invalid_argument("makeCatalogPatch: remove requires entry with name and type");
             }
+
             nlohmann::json op;
             op["op"] = "remove";
-            op["path"] = "/tracks/" + std::to_string(remove_index);
+            op["path"] = "/tracks/-";
+
+            nlohmann::json value;
+            value["name"] = entry.name;
+            value["type"] = CatalogTrackEntry::lowercase(entry.type);
+
+            // Namespace hozzáadása, ha nem üres
+            if (!entry.track_namespace_.empty()) {
+                value["namespace"] = entry.track_namespace_;
+            }
+
+            op["value"] = value;
             patch.push_back(op);
 
         } else {
