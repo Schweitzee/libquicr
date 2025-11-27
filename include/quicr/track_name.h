@@ -7,7 +7,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iostream>
+#include <numeric>
 #include <optional>
+#include <ostream>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -253,6 +256,18 @@ namespace quicr {
             }
 
             return true;
+        }
+
+        std::string ToString() const noexcept
+        {
+            std::string entries = "";
+            for (size_t i = 0; i < entries_.size(); i++) {
+                std::string temp = {entries_[i].begin(),entries_[i].end()};
+                if (i != entries_.size()-1) temp = temp +",";
+                entries = entries + temp;
+            }
+            if (entries.compare("") == 0) std::cout << "Empty namespace problem!!!!" << std::endl;
+            return entries;
         }
 
       private:

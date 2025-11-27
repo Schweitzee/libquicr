@@ -3,10 +3,25 @@
 
 #pragma once
 
+#include "media.h"
+
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
+#include <atomic>
+
+// FFmpeg forward declarations (így nem kell include-olni a libav header-eket itt)
+struct AVFormatContext;
+struct AVCodecContext;
+struct AVFrame;
+struct AVPacket;
+struct SwsContext;
+struct AVRational;
 
 namespace quicr {
 namespace transcode {
@@ -16,134 +31,120 @@ namespace transcode {
  */
 struct TranscodeConfig
 {
-    /// Target output width in pixels
     uint32_t target_width{ 0 };
-
-    /// Target output height in pixels
     uint32_t target_height{ 0 };
-
-    /// Target output bitrate in bits per second (0 = auto)
     uint32_t target_bitrate{ 0 };
-
-    /// Target framerate (0 = same as input)
     uint32_t target_fps{ 0 };
-
-    /// Codec to use for output (e.g., "h264", "hevc"). Empty = same as input
-    std::string output_codec;
-
-    /// Quality preset ("ultrafast", "fast", "medium", "slow", "veryslow")
-    std::string encoder_preset{ "medium" };
-
-    /// Enable debug logging
     bool debug{ true };
 };
 
 /**
- * @brief CMAF Transcode Client (Continuous Streaming)
- *
- * This class handles transcoding of fragmented CMAF streams using a continuous
- * processing pipeline. Data is buffered and processed through persistent
- * decoder/encoder contexts for efficiency.
- *
- * Architecture:
- * - PushInputInit/Fragment() buffer data into input stream
- * - Single persistent AVFormatContext reads from buffer via custom AVIO
- * - Single decoder/encoder contexts maintained throughout stream
- * - Processed frames output via callbacks
- *
- * Usage:
- * @code
- *   auto client = TranscodeClient::Create(config);
- *   client->SetOutputInitCallback([](const uint8_t* data, size_t size) { ... });
- *   client->SetOutputFragmentCallback([](const uint8_t* data, size_t size) { ... });
- *   client->PushInputInit(init_data, init_size);
- *   client->PushInputFragment(fragment_data, fragment_size); // Processes continuously
- *   client->Flush();
- * @endcode
+ * @brief Thread-safe Ring Buffer helper class
+ * Defined here to be part of the TranscodeClient memory layout without complex pointers.
+ */
+class RingBuffer {
+public:
+    explicit RingBuffer(size_t capacity);
+    void Write(const uint8_t* data, size_t size);
+    int Read(uint8_t* dest, int size);
+    size_t Size() const;
+    bool IsEmptyUnsafe() const;
+
+private:
+    void Expand(size_t needed);
+    mutable std::mutex mutex_;
+    std::vector<uint8_t> buffer_;
+    size_t read_pos_{0};
+    size_t write_pos_{0};
+    size_t stored_bytes_{0};
+};
+
+/**
+ * @brief CMAF Transcode Client (Simplified Implementation)
  */
 class TranscodeClient
 {
   public:
-    /// Callback type for output init segment
     using OutputInitCallback = std::function<void(const uint8_t* data, size_t size)>;
+    using OutputFragmentCallback = std::function<void(MP4Chunk)>;
 
-    /// Callback type for output media fragments
-    using OutputFragmentCallback = std::function<void(const uint8_t* data, size_t size)>;
+    explicit TranscodeClient(const TranscodeConfig& config);
 
-    /**
-     * @brief Create a transcode client
-     * @param config Configuration for transcoding
-     * @return Shared pointer to TranscodeClient instance
-     */
-    static std::shared_ptr<TranscodeClient> Create(const TranscodeConfig& config);
-
-    /**
-     * @brief Destructor
-     */
     virtual ~TranscodeClient();
 
-    /**
-     * @brief Set callback for output initialization segment
-     * @param callback Function to call when output init segment is ready
-     */
     void SetOutputInitCallback(OutputInitCallback callback);
-
-    /**
-     * @brief Set callback for output media fragments
-     * @param callback Function to call when output fragment is ready
-     */
     void SetOutputFragmentCallback(OutputFragmentCallback callback);
 
-    /**
-     * @brief Push input CMAF initialization segment
-     * @param data Pointer to init segment data
-     * @param size Size of init segment in bytes
-     * @return true on success, false on error
-     */
     bool PushInputInit(const uint8_t* data, size_t size);
-
-    /**
-     * @brief Push input CMAF media fragment
-     *
-     * Appends fragment to input buffer and processes available data through
-     * the continuous decode/encode pipeline.
-     *
-     * @param data Pointer to fragment data
-     * @param size Size of fragment in bytes
-     * @return true on success, false on error
-     */
     bool PushInputFragment(const uint8_t* data, size_t size);
-
-    /**
-     * @brief Flush any remaining data and finalize output
-     * @return true on success, false on error
-     */
     bool Flush();
-
-    /**
-     * @brief Close the transcode client and release resources
-     */
     void Close();
-
-    /**
-     * @brief Check if the client is ready to accept input
-     * @return true if ready, false otherwise
-     */
     bool IsReady() const;
-
-    /**
-     * @brief Get the last error message
-     * @return Error message string, empty if no error
-     */
     std::string GetLastError() const;
 
-  protected:
-    TranscodeClient(const TranscodeConfig& config);
 
   private:
-    // Forward declaration of implementation details
-    class Impl;
-    std::unique_ptr<Impl> impl_;
+    // Internal Helper Methods
+    void TranscodeLoop();
+    void ProcessPendingData();
+    bool InitializeDemuxer();
+    void ProcessPacket(AVPacket* packet);
+    void ProcessFrame(AVFrame* frame);
+    bool InitializeOutput();
+    void DrainEncoder();
+    void WriteOutputPacketFunc(AVPacket* packet);
+    void FlushOutput(bool keyframe_flag);
+    void Cleanup();
+    void StopAndJoin();
+
+    // Static callback for FFmpeg custom IO
+    static int ReadBufferCallback(void* opaque, uint8_t* buf, int buf_size);
+
+    // --- Member Variables ---
+
+    TranscodeConfig config_;
+    std::atomic<bool> has_init_segment_{ false };
+    std::string last_error_;
+
+    // Threading and Synchronization
+    std::thread worker_thread_;
+    std::atomic<bool> running_{ false };
+    std::mutex cv_mutex_;
+    std::condition_variable data_cv_;
+    std::mutex callback_mutex_;
+
+    // Input Buffer
+    RingBuffer input_ring_buffer_;
+
+    // FFmpeg Contexts
+    AVFormatContext* input_fmt_ctx_{ nullptr };
+    uint8_t* avio_ctx_buffer_{ nullptr };
+    int video_stream_index_{ -1 };
+
+    AVCodecContext* decoder_ctx_{ nullptr };
+    // Mivel az AVRational C struct, és forward deklaráltuk, pointerként tároljuk vagy
+    // a .cpp-ben kezeljük. Egyszerűbb itt tárolni a számlálót/nevezőt külön,
+    // vagy void*-ként, de a legegyszerűbb, ha "input_time_base_num/den"-t tárolunk.
+    // De hogy egyszerű maradjon a kód, használjunk int-eket a timebase-hez:
+    int input_time_base_num_{1};
+    int input_time_base_den_{1};
+
+    SwsContext* sws_ctx_{ nullptr };
+    AVFrame* scaled_frame_{ nullptr };
+
+    AVCodecContext* encoder_ctx_{ nullptr };
+    AVFormatContext* output_fmt_ctx_{ nullptr };
+    int output_stream_index_{ 0 };
+
+    std::vector<uint8_t> output_buffer_;
+    bool output_initialized_{ false };
+
+    int64_t next_pts_{ 0 };
+    int64_t last_encoded_pts_{ -1 };
+
+    // Callbacks
+    OutputInitCallback output_init_cb_;
+    OutputFragmentCallback output_fragment_cb_;
 };
 
 } // namespace transcode

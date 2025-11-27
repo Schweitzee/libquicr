@@ -35,7 +35,7 @@ class SubscriberUtil
   public:
     Catalog catalog;
     std::map<std::shared_ptr<VideoSubscribeTrackHandler>, std::shared_ptr<SubTrack>> sub_tracks;
-    bool catalog_read = false;
+    std::atomic_bool catalog_read = false;
     bool subscribed = false;
 
     SubscriberUtil() {};

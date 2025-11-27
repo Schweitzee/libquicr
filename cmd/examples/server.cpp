@@ -14,6 +14,8 @@
 
 #include "signal_handler.h"
 
+std::shared_ptr<spdlog::logger> logger;
+
 using TrackNamespaceHash = uint64_t;
 using TrackNameHash = uint64_t;
 using FullTrackNameHash = uint64_t;
@@ -1018,6 +1020,16 @@ InitConfig(cxxopts::ParseResult& cli_opts)
 int
 main(int argc, char* argv[])
 {
+    logger = spdlog::stderr_color_mt("console");
+    spdlog::set_default_logger(logger);
+    spdlog::set_level(spdlog::level::trace);
+
+    SPDLOG_INFO("INFO");
+    SPDLOG_WARN("WARN");
+    SPDLOG_ERROR("ERROR");
+    SPDLOG_DEBUG("DEBUG");
+    SPDLOG_TRACE("TRACE");
+
     int result_code = EXIT_SUCCESS;
 
     cxxopts::Options options("qclient",

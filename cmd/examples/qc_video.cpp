@@ -610,9 +610,11 @@ PublishCatalog(Catalog& catalog, std::shared_ptr<VideoPublishTrackHandler> TH, c
                                              catalog_bytespan.size(),
                                              quicr::ObjectStatus::kAvailable,
                                              2 /*priority*/,
-                                             5000 /* ttl */,
+                                             15000 /* ttl */,
                                              std::nullopt,
                                              std::nullopt };
+
+        std::this_thread::sleep_for(std::chrono::seconds(6));
 
         try {
             auto status = TH->PublishObject(obj_headers, catalog_bytespan);
@@ -792,12 +794,9 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
         splitter_thread.join();
         return;
     }
-    for (auto& track_entry : shared_state->catalog.tracks()) {
-        track_entry.track_namespace_.assign(shared_state->catalog.namespace_+ ",data");
-    }
     {
         quicr::FullTrackName full_track_name =
-          quicr::example::MakeFullTrackName(shared_state->catalog.namespace_+ ",catalog", "publisher");
+          quicr::example::MakeFullTrackName(shared_state->catalog.namespace_, "catalog");
 
         auto th = std::make_shared<VideoPublishTrackHandler>(full_track_name, quicr::TrackMode::kStream, 1, 3000);
         TrackHandlers.push_back(th);
@@ -811,7 +810,7 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
     for (CatalogTrackEntry track : shared_state->catalog.tracks()) {
 
         quicr::FullTrackName full_track_name =
-          quicr::example::MakeFullTrackName(track.track_namespace_, track.name);
+          quicr::example::MakeFullTrackName(shared_state->catalog.namespace_, track.name);
 
         auto th = std::make_shared<VideoPublishTrackHandler>(full_track_name, quicr::TrackMode::kStream, 2, 3000);
         TrackHandlers.push_back(th);
@@ -838,8 +837,8 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
     }
     // std::thread publisher_thread(UnifiedMediaPublisher, shared_state, std::cref(stop));
 
-    while (!stop.load(std::memory_order_relaxed)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    while (moq_example::terminate == false) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
     }
 
     if (splitter_thread.joinable()) {
@@ -865,6 +864,8 @@ DoPublisher2(std::shared_ptr<PublisherSharedState> shared_state,
 
     for (auto& th : TrackHandlers) {
         try {
+            std::string asd ={th->GetFullTrackName().name.begin(), th->GetFullTrackName().name.end()};
+            SPDLOG_INFO("Unpublishing track: {}",asd );
             client->UnpublishTrack(th);
         } catch (...) {
             SPDLOG_WARN("Exception while unpublishing a track handler (ignored)");
@@ -923,7 +924,7 @@ DoSubscriber(const std::string& track_namespace,
     auto sub_util = std::make_shared<SubscriberUtil>();
 
     // 1) KATALÓGUS FELIRATKOZÁS
-    auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace+",catalog", "publisher");
+    auto catalog_full_track_name = quicr::example::MakeFullTrackName(track_namespace, "catalog");
     const auto catalog_track_handler = std::make_shared<CatalogSubscribeTrackHandler>(
       catalog_full_track_name, messages::FilterType::kLargestObject, joining_fetch, sub_util);
 
@@ -1345,9 +1346,9 @@ InitConfig(cxxopts::ParseResult& cli_opts, bool& enable_pub, bool& enable_sub, b
 int
 main(int argc, char* argv[])
 {
-    // Initialize logger inside a function
-    // logger = spdlog::stderr_color_mt("err_logger");
-    // spdlog::set_default_logger(logger);
+    logger = spdlog::stderr_color_mt("console");
+    spdlog::set_default_logger(logger);
+    spdlog::set_level(spdlog::level::trace);
 
     int result_code = EXIT_SUCCESS;
 
@@ -1418,6 +1419,7 @@ main(int argc, char* argv[])
     bool enable_fetch{ false };
     bool use_announce{ false };
     quicr::ClientConfig config = InitConfig(result, enable_pub, enable_sub, enable_fetch, use_announce);
+    config.transport_config.time_queue_max_duration = 20000;
 
     SPDLOG_INFO("INFO");
     SPDLOG_WARN("WARN");
@@ -1523,18 +1525,23 @@ main(int argc, char* argv[])
         stop_threads = true;
         SPDLOG_ERROR("Stopping threads...");
 
-        if (pub_thread.joinable()) {
-            pub_thread.join();
+        if (enable_pub) {
+            if (pub_thread.joinable()) {
+                pub_thread.join();
+            }
         }
 
-        if (sub_thread.joinable()) {
-            sub_thread.join();
+        if (enable_sub) {
+            if (sub_thread.joinable()) {
+                sub_thread.join();
+            }
         }
 
-        if (fetch_thread.joinable()) {
-            fetch_thread.join();
+        if (enable_fetch) {
+            if (fetch_thread.joinable()) {
+                fetch_thread.join();
+            }
         }
-
         client->Disconnect();
 
         SPDLOG_ERROR("Client done");

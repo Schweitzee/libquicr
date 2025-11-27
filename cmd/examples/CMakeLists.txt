@@ -52,7 +52,7 @@ set_target_properties(qclient
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS OFF)
 
-target_compile_definitions(qclient PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+target_compile_definitions(qclient PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
 
 add_executable(qc_video
         qc_video.cpp
@@ -91,17 +91,13 @@ set_target_properties(qc_video
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS OFF)
 
-target_compile_definitions(qc_video PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+target_compile_definitions(qc_video PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
 
 add_executable(qc_request
         qc_request.cpp
         media.h
         media.cpp
         catalog.hpp
-        ffmpeg_cmaf_splitter.cpp
-        ffmpeg_cmaf_splitter.hpp
-        ffmpeg_moq_adapter.cpp
-        ffmpeg_moq_adapter.h
         subscriber_util.cpp
         VideoSubscribeTrackHandler.h
         base64_tool.h
@@ -131,7 +127,7 @@ set_target_properties(qc_request
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS OFF)
 
-target_compile_definitions(qc_request PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+target_compile_definitions(qc_request PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
 
 add_executable(qc_transcode
         qc_transcode.cpp
@@ -144,7 +140,7 @@ add_executable(qc_transcode
         helper_functions.h
         transcode_request.h
         transcode_client.cpp
-        transcode_client.h)
+        TranscodeRequestSubscribeTrackHandler.h)
 
 target_link_libraries(qc_transcode PRIVATE
         quicr
@@ -169,7 +165,78 @@ set_target_properties(qc_transcode
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS OFF)
 
-target_compile_definitions(qc_transcode PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+target_compile_definitions(qc_transcode PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
+
+add_executable(qc_tr_test
+        qc_tr_test.cpp
+        media.h
+        catalog.hpp
+        subscriber_util.cpp
+        VideoSubscribeTrackHandler.h
+        CatalogSubscribeTrackHandler.h
+        base64_tool.h
+        helper_functions.h
+        transcode_request.h
+        transcode_client.cpp
+        transcode_client.h
+        TranscodeRequestSubscribeTrackHandler.h)
+
+target_link_libraries(qc_tr_test PRIVATE
+        quicr
+        nlohmann_json::nlohmann_json
+        ffmpeg_import
+        gstreamer_import)
+
+target_include_directories(qc_tr_test PRIVATE
+        ../dependencies
+        ${FFMPEG_INSTALL_DIR}/include
+        ${CMAKE_SOURCE_DIR}/dependencies/concurrentqueue   # itt van a concurrentqueue.h
+        ${CMAKE_SOURCE_DIR}/dependencies)
+
+target_compile_options(qc_tr_test
+        PRIVATE
+        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>: -Wpedantic -Wextra -Wall>
+        $<$<CXX_COMPILER_ID:MSVC>: >)
+
+set_target_properties(qc_tr_test
+        PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS OFF)
+
+target_compile_definitions(qc_tr_test PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
+
+add_executable(qc_catalog_maker
+        qc_catalog_maker.cpp
+        catalog.hpp
+        subscriber_util.cpp
+        CatalogSubscribeTrackHandler.h
+        helper_functions.h)
+
+target_link_libraries(qc_catalog_maker PRIVATE
+        quicr
+        nlohmann_json::nlohmann_json
+        ffmpeg_import
+        gstreamer_import)
+
+target_include_directories(qc_catalog_maker PRIVATE
+        ../dependencies
+        ${FFMPEG_INSTALL_DIR}/include
+        ${CMAKE_SOURCE_DIR}/dependencies/concurrentqueue   # itt van a concurrentqueue.h
+        ${CMAKE_SOURCE_DIR}/dependencies)
+
+target_compile_options(qc_catalog_maker
+        PRIVATE
+        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>: -Wpedantic -Wextra -Wall>
+        $<$<CXX_COMPILER_ID:MSVC>: >)
+
+set_target_properties(qc_catalog_maker
+        PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS OFF)
+
+target_compile_definitions(qc_catalog_maker PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
 
 add_executable(qserver
         server.cpp
@@ -188,11 +255,14 @@ set_target_properties(qserver
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS ON)
 
-target_compile_definitions(qserver PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+target_compile_definitions(qserver PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE)
 
 if(LINT)
         include(Lint)
         Lint(qserver)
         Lint(qclient)
         Lint(qc_video)
+        Lint(qc_transcode)
+        Lint(qc_catalog_maker)
+        Lint(qc_request)
 endif()

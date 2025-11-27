@@ -77,15 +77,54 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
     }
 
 
-    void ObjectReceived(const quicr::ObjectHeaders& hdr, quicr::BytesSpan data) override
+void ObjectReceived(const quicr::ObjectHeaders& hdr, quicr::BytesSpan data) override
     {
-        std::string s(reinterpret_cast<const char*>(GetFullTrackName().name.data()), GetFullTrackName().name.size());
-        // SPDLOG_INFO("Received message on {0}: Group:{1}, Object:{2}", s, hdr.group_id, hdr.object_id);
-        SPDLOG_INFO("Received object on {0}: Group:{1}, Object:{2}, Size:{3} bytes", s, hdr.group_id, hdr.object_id, data.size());
+        try {
 
-        std::span<const uint8_t> data_span = data;
+            // 2. Név lekérése és ellenőrzése
+            auto ftn = GetFullTrackName();
+            size_t name_size = ftn.name.size();
+            const uint8_t* name_ptr = ftn.name.data();
 
-        transcode_client_->PushInputFragment(data_span.data(), data_span.size());
+
+            std::string s;
+            if (name_size > 1000) {
+                 std::cerr << "[ERROR] Track name size is suspiciously large: " << name_size << std::endl;
+                 s = "<INVALID_SIZE>";
+            } else if (name_size > 0 && name_ptr != nullptr) {
+                // Biztonságos másolás
+                s.assign(ftn.name.begin(), ftn.name.end());
+            } else {
+                s = "<empty_or_null>";
+            }
+
+            // 3. Logolás
+            SPDLOG_INFO("Received object on {0}: Group:{1}, Object:{2}, Size:{3} bytes",
+                        s, hdr.group_id, hdr.object_id, data.size());
+
+            // 4. Adat ellenőrzése
+            std::span<const uint8_t> data_span = data;
+            size_t data_len = data_span.size();
+
+            if (data_len > 10 * 1024 * 1024) { // Pl. 10MB limit
+                 SPDLOG_ERROR("Received suspiciously large data packet: {} bytes", data_len);
+                 return;
+            }
+
+            if (transcode_client_) {
+                // Itt is elkapjuk, ha a ringbuffer dobna hibát
+                transcode_client_->PushInputFragment(data_span.data(), data_len);
+            } else {
+                SPDLOG_WARN("Transcode client is null in ObjectReceived");
+            }
+
+        } catch (const std::length_error& le) {
+            std::cerr << "[CRITICAL] std::length_error in ObjectReceived: " << le.what() << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[CRITICAL] Exception in ObjectReceived: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[CRITICAL] Unknown exception in ObjectReceived" << std::endl;
+        }
     }
 
     void StatusChanged(Status status) override

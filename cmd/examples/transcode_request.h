@@ -138,10 +138,9 @@ struct TranscodeRequest {
     std::string request_id;   // JSON: "request_id"
     std::string client_id;    // JSON: "client_id"
 
-    TranscodeSource source;                       // JSON: "source"
-    std::optional<TranscodeOutput> output;        // JSON: "output" (opcionális)
-    std::vector<TranscodeOperation> operations;   // JSON: "operations"
-    std::optional<TranscodeConstraints> constraints; // JSON: "constraints"
+    TranscodeSource source;
+    std::optional<TranscodeOutput> output;
+    std::vector<TranscodeOperation> operations;
 };
 
 TranscodeOperation parse_single_operation(const json& opj)
@@ -288,8 +287,16 @@ TranscodeRequest parse_transcode_request(const json& j)
     if (!j.contains("request_id") || !j.contains("client_id"))
         throw std::invalid_argument("TranscodeRequest missing request_id or client_id");
 
-    req.request_id = j.at("request_id").get<std::string>();
-    req.client_id  = j.at("client_id").get<std::string>();
+    if (j.at("request_id").is_number()) {
+        req.request_id = std::to_string(j.at("request_id").get<int>());
+    } else {
+        req.request_id = j.at("request_id").get<std::string>();
+    }
+    if (j.at("client_id").is_number()) {
+        req.client_id = std::to_string(j.at("client_id").get<int>());
+    } else {
+        req.client_id = j.at("client_id").get<std::string>();
+    }
 
     if (req.request_id.empty())
         throw std::invalid_argument("TranscodeRequest.request_id must be non-empty");
