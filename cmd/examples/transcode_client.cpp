@@ -405,7 +405,7 @@ bool TranscodeClient::InitializeOutput()
     encoder_ctx_->time_base = (AVRational){1, 90000};
     encoder_ctx_->framerate = decoder_ctx_->framerate;
     encoder_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
-    encoder_ctx_->gop_size = 30;
+    encoder_ctx_->gop_size = 60;
     encoder_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     if (config_.target_bitrate > 0) encoder_ctx_->bit_rate = config_.target_bitrate;
 

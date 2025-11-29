@@ -18,7 +18,6 @@
 #include <quicr/defer.h>
 
 #include <filesystem>
-#include <format>
 #include <fstream>
 
 #include <quicr/publish_fetch_handler.h>
@@ -32,7 +31,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <termios.h>
 
 #include "CatalogSubscribeTrackHandler.h"
 #include "TranscodeRequestSubscribeTrackHandler.h"
@@ -275,7 +273,6 @@ class SmartDeltaPublishTrackHandler : public quicr::PublishTrackHandler
         object_headers.object_id = object_id_;
 
         {
-            // LOCK global cache
             std::lock_guard<std::mutex> cache_lock(qclient_vars::cache_mutex);
 
             if (!qclient_vars::cache.contains(*track_alias)) {
@@ -293,7 +290,7 @@ class SmartDeltaPublishTrackHandler : public quicr::PublishTrackHandler
                 qclient_vars::cache.at(*track_alias)
                   .Insert(object_headers.group_id, { std::move(object) }, qclient_vars ::cache_duration_ms.count());
             }
-        } // Unlock global cache
+        }
 
         group_id_++;
 
@@ -355,9 +352,7 @@ class VideoPublishTrackHandler : public quicr::PublishTrackHandler
     {
         auto track_alias = GetTrackAlias();
 
-        // Cache Object
         {
-            // LOCK cache operations
             std::lock_guard<std::mutex> lock(qclient_vars::cache_mutex);
 
             if (!qclient_vars::cache.contains(*track_alias)) {
@@ -375,7 +370,7 @@ class VideoPublishTrackHandler : public quicr::PublishTrackHandler
                 qclient_vars::cache.at(*track_alias)
                   .Insert(object_headers.group_id, { std::move(object) }, qclient_vars ::cache_duration_ms.count());
             }
-        } // Unlock
+        }
 
         return quicr::PublishTrackHandler::PublishObject(object_headers, data);
     }
@@ -393,11 +388,17 @@ private:
 
     // Queue to store incoming requests found via announcements
     std::shared_ptr<TranscodeRequestQueue> request_queue_;
-    // The root namespace + "transcode" + "requests" prefix to listen for
     quicr::TrackNamespace requests_ns_prefix_;
 
     std::mutex handlers_mutex_;
     std::vector<std::shared_ptr<TranscodeRequestSubscribeHandler>> active_request_handlers_;
+
+    std::mutex source_mutex_;
+    std::map<std::string, std::shared_ptr<TranscodeSubscribeTrackHandler>> active_source_handlers_;
+
+    std::string MakeSourceKey(const std::string& ns, const std::string& name) {
+        return ns + "::" + name;
+    }
 
     MyClient(const quicr::ClientConfig& cfg, bool& stop_threads)
       : quicr::Client(cfg)
@@ -418,6 +419,46 @@ private:
 
     void SetRequestsNamespacePrefix(const quicr::TrackNamespace ns) {
         requests_ns_prefix_ = ns;
+    }
+
+    std::shared_ptr<TranscodeSubscribeTrackHandler> GetOrSubscribeSource(
+        const std::string& ns,
+        const std::string& name,
+        std::shared_ptr<SubTrack> subtrack_data)
+    {
+        std::lock_guard<std::mutex> lock(source_mutex_);
+        std::string key = MakeSourceKey(ns, name);
+
+        if (active_source_handlers_.contains(key)) {
+            SPDLOG_INFO("REUSING source subscription: {}-{}", ns, name);
+            return active_source_handlers_.at(key);
+        }
+
+        SPDLOG_INFO("NEW source subscription: {}-{}", ns, name);
+        auto ftn = quicr::example::MakeFullTrackName(ns, name);
+
+        auto handler = std::make_shared<TranscodeSubscribeTrackHandler>(
+            ftn, quicr::messages::FilterType::kLargestObject, std::nullopt, subtrack_data
+        );
+
+        SubscribeTrack(handler);
+        active_source_handlers_.try_emplace(key, handler);
+        return handler;
+    }
+
+    void ReleaseSource(const std::string& ns, const std::string& name, std::shared_ptr<transcode::TranscodeClient> client)
+    {
+        std::lock_guard<std::mutex> lock(source_mutex_);
+        std::string key = MakeSourceKey(ns, name);
+
+        if (active_source_handlers_.contains(key)) {
+            auto handler = active_source_handlers_[key];
+            if (handler->RemoveTranscodeClient(client)) {
+                SPDLOG_INFO("Source {}-{} empty. Unsubscribing.", ns, name);
+                UnsubscribeTrack(handler);
+                active_source_handlers_.erase(key);
+            }
+        }
     }
 
     void StatusChanged(Status status) override
@@ -477,29 +518,22 @@ private:
     void PublishNamespaceReceived(const quicr::TrackNamespace& track_namespace,
                                           const quicr::PublishNamespaceAttributes&) override
     {
-        // Ellenőrizzük, hogy ez egy transcode request-e (Prefix check)
         if (!request_queue_ || requests_ns_prefix_.empty()) return;
 
         std::string ns_str = track_namespace.ToString();
         std::string prefix_str = requests_ns_prefix_.ToString();
 
-        // Ha a névtér ezzel kezdődik: "bbb,transcode,requests"
         if (ns_str.find(prefix_str) == 0) {
-            // Extra ellenőrzés: ne reagáljunk magára a gyökérre, csak az al-névterekre
-            // A struktúra: prefix + hallgatoID + reqID.
-            // Ha a string hosszabb mint a prefix, akkor ez egy konkrét kérés.
             if (ns_str.length() > prefix_str.length()) {
 
                 SPDLOG_INFO("Detected Request Announce: {}", ns_str);
 
-                // A szabály szerint a track neve mindig "data"
                 auto ftn = quicr::example::MakeFullTrackName(ns_str, "data");
 
                 auto track_handler = std::make_shared<TranscodeRequestSubscribeHandler>(
                     ftn, request_queue_, false
                 );
 
-                // Feliratkozunk a "data" trackre
                 SubscribeTrack(track_handler);
 
                 {
@@ -539,7 +573,6 @@ private:
 
     std::optional<quicr::messages::Location> GetLargestAvailable(const quicr::FullTrackName& track_full_name)
     {
-        // FONTOS: Lockoljuk a cache-t, mert a háttérszál írhatja közben!
         std::lock_guard<std::mutex> lock(qclient_vars::cache_mutex);
 
         std::optional<quicr::messages::Location> largest_location = std::nullopt;
@@ -548,7 +581,6 @@ private:
         auto cache_entry_it = qclient_vars::cache.find(th.track_fullname_hash);
         if (cache_entry_it != qclient_vars::cache.end()) {
             auto& [_, cache] = *cache_entry_it;
-            // A cache.Last() olvasása nem thread-safe lock nélkül
             if (const auto& latest_group = cache.Last(); latest_group && !latest_group->empty()) {
                 const auto& latest_object = std::prev(latest_group->end());
                 largest_location = { latest_object->headers.group_id, latest_object->headers.object_id };
@@ -580,7 +612,6 @@ private:
         }
 
         if (!largest_location.has_value()) {
-            // TODO: This changes to send an empty object instead of REQUEST_ERROR
             reason_code = quicr::FetchResponse::ReasonCode::kNoObjects;
         } else {
             SPDLOG_INFO("Fetch received request id: {} largest group: {} object: {}",
@@ -616,7 +647,6 @@ private:
             return;
         }
 
-        // TODO: Adjust the TTL
         auto pub_fetch_h =
           quicr::PublishFetchHandler::Create(track_full_name, priority, request_id, group_order, 50000);
         BindFetchTrack(connection_handle, pub_fetch_h);
@@ -701,25 +731,20 @@ private:
     }
 
     /* This function in this client handles incoming transcode request tracks, so on each call of this function we can subscribe to the track
-     *
-     *
      */
 void PublishReceived(quicr::ConnectionHandle connection_handle, uint64_t request_id, const quicr::messages::PublishAttributes& publish_attributes) override
     {
         auto th = quicr::TrackHash(publish_attributes.track_full_name);
 
-        // JAVÍTÁS: Ellenőrizzük, hogy inicializálva van-e a sor
         if (!request_queue_ || requests_ns_prefix_.empty()) {
             SPDLOG_ERROR("Request queue or requests namespace prefix not initialized.");
             ResolvePublish(connection_handle, request_id, publish_attributes, { .reason_code = quicr::PublishResponse::ReasonCode::kNotSupported });
             return;
         }
 
-        // JAVÍTÁS: Ellenőrizzük a névteret. Ha nem "transcode/requests", akkor ignoráljuk.
         std::string incoming_ns = publish_attributes.track_full_name.name_space.ToString();
         std::string expected_prefix = requests_ns_prefix_.ToString();
         std::string inc_track_name ={publish_attributes.track_full_name.name.begin(), publish_attributes.track_full_name.name.end()};
-        // Egyszerűsített string prefix check
         if (incoming_ns.find(expected_prefix) != 0) {
             SPDLOG_ERROR("PUBLISH track {}-{} does not match expected prefix {}.",
                          incoming_ns,
@@ -738,13 +763,13 @@ void PublishReceived(quicr::ConnectionHandle connection_handle, uint64_t request
         track_handler->SetDeliveryTimeout(publish_attributes.delivery_timeout);
         track_handler->SupportNewGroupRequest(publish_attributes.new_group_request_id.has_value());
 
-        SubscribeTrack(track_handler);
+        //SubscribeTrack(track_handler);
         {
             std::lock_guard<std::mutex> lock(handlers_mutex_);
             active_request_handlers_.push_back(track_handler);
         }
 
-        ResolvePublish(connection_handle, request_id, publish_attributes, { .reason_code = quicr::PublishResponse::ReasonCode::kOk });
+        ResolvePublish(connection_handle, request_id, publish_attributes, { .reason_code = quicr::PublishResponse::ReasonCode::kNotSupported });
     }
 };
 
@@ -763,8 +788,6 @@ void HandleTranscodeRequest(const TranscodeRequest& request,
                             std::shared_ptr<MyClient> client,
                             const std::string& base_namespace)
 {
-    // Kimentjük a request ID-t egy lokális stringbe, hogy a szál biztosan ezt másolja le,
-    // és ne a 'request' objektumra hivatkozzon, ami megszűnhet.
     std::string req_id_str = request.request_id;
 
     SPDLOG_INFO("Starting transcoding setup (SYNC) for request_id: {}", req_id_str);
@@ -827,9 +850,7 @@ void HandleTranscodeRequest(const TranscodeRequest& request,
             : "tran_" + client->getEndpointID() + "_" + source_track_name + "_" + std::to_string(transcode_config.target_height) + "p";
 
         // 5. Init Callback -> Delta Update
-        // A [=] capture itt lemásolja az output_track_name-et és output_ns-t.
         transcode_client->SetOutputInitCallback([=](const uint8_t* data, size_t size) {
-            // FONTOS: Itt try-catch, mert a base64 vagy a catalog patch dobhat hibát
                 try {
                     if (size == 0 || data == nullptr) {
                         SPDLOG_WARN("Transcoder Init Callback called with empty data");
@@ -879,37 +900,25 @@ void HandleTranscodeRequest(const TranscodeRequest& request,
         std::vector<uint8_t> init_data = base64::decode_to_uint8_vec(track_it->b64_init_data);
         transcode_client->PushInputInit(init_data.data(), init_data.size());
 
-        // 8. Subscribe to Source
+        // 9. Publish Output Track
+        auto output_full_track_name = quicr::example::MakeFullTrackName(output_ns, output_track_name);
+        auto output_track_handler =
+          std::make_shared<VideoPublishTrackHandler>(output_full_track_name, quicr::TrackMode::kStream, 2, 3000);
+        output_track_handler->SetTrackAlias(4000 + std::hash<std::string>{}(req_id_str) % 1000);
+
+        client->PublishTrack(output_track_handler);
+        SPDLOG_INFO("Publishing transcoded track: {}-{}", output_ns, output_track_name);
+
         auto subtrack = std::make_shared<SubTrack>();
         subtrack->track_entry = *track_it;
         subtrack->namespace_ = source_ns;
         subtrack->init = init_data;
 
-        auto source_full_track_name = quicr::example::MakeFullTrackName(source_ns, source_track_name);
-        auto source_track_handler = std::make_shared<TranscodeSubscribeTrackHandler>(
-          source_full_track_name,
-          quicr::messages::FilterType::kLargestObject,
-          std::nullopt,
-          subtrack,
-          transcode_client);
+        auto source_track_handler = client->GetOrSubscribeSource(source_ns, source_track_name, subtrack);
+        source_track_handler->AddTranscodeClient(transcode_client);
 
-        client->SubscribeTrack(source_track_handler);
         SPDLOG_INFO("Subscribed to source track (SYNC setup complete).");
 
-        // 9. Publish Output Track
-        auto output_full_track_name = quicr::example::MakeFullTrackName(output_ns, output_track_name);
-        auto output_track_handler =
-          std::make_shared<VideoPublishTrackHandler>(output_full_track_name, quicr::TrackMode::kStream, 2, 3000);
-        output_track_handler->SetTrackAlias(4000);
-
-        client->PublishTrack(output_track_handler);
-        SPDLOG_INFO("Publishing transcoded track: {}-{}", output_ns, output_track_name);
-
-        // =================================================================================
-        // ASYNC LOOP INDÍTÁSA
-        // FONTOS: A lambda capture-ben [=] van, de a 'req_id_str'-t használjuk, NEM a 'request'-et.
-        // Így elkerüljük a dangling reference problémát.
-        // =================================================================================
 
   std::thread publishing_thread([
             fragment_queue,
@@ -917,10 +926,11 @@ void HandleTranscodeRequest(const TranscodeRequest& request,
             source_track_handler,
             transcode_client,
             client,
-            req_id_str
+            req_id_str,
+            source_ns,
+            source_track_name
         ]() {
             try {
-                // Rögtön logolunk, hogy lássuk, beléptünk-e
                 SPDLOG_INFO("ASYNC thread STARTED for request_id: {}", req_id_str);
 
                 uint64_t group_id = 0;
@@ -938,8 +948,6 @@ void HandleTranscodeRequest(const TranscodeRequest& request,
                             object_id = 0;
                         }
 
-                        SPDLOG_DEBUG("Publishing transcoded fragment: group={}, object={}, size={}",
-                                     group_id, object_id, fragment.whole_chunk.data.size());
                         quicr::ObjectHeaders obj_headers = { group_id,
                                                              object_id,
                                                              0,
@@ -954,11 +962,10 @@ void HandleTranscodeRequest(const TranscodeRequest& request,
                         if (output_track_handler->CanPublish()) {
                             auto status = output_track_handler->PublishObject(obj_headers, fragment.whole_chunk.data);
                             if (status == quicr::PublishTrackHandler::PublishObjectStatus::kOk) {
-                                SPDLOG_DEBUG("Published transcoded fragment: group={}, object={}, size={}",
-                                             group_id, object_id++, fragment.whole_chunk.data.size());
+                                SPDLOG_DEBUG("Published transcoded fragment: group={}, object={} on track alias={}",
+                                             group_id, object_id++, fragment.whole_chunk.data.size(), output_track_handler->GetTrackAlias().value());
                             }
                         }
-                        SPDLOG_DEBUG("Transcoded fragment published");
                     }
 
                     if (fragment_queue->IsClosed() && fragment_queue->Empty()) {
@@ -974,7 +981,7 @@ void HandleTranscodeRequest(const TranscodeRequest& request,
                     transcode_client->Close();
                 }
                 if (client) {
-                    client->UnsubscribeTrack(source_track_handler);
+                    client->ReleaseSource(source_ns, source_track_name, transcode_client);
                     client->UnpublishTrack(output_track_handler);
                 }
 
@@ -987,8 +994,6 @@ void HandleTranscodeRequest(const TranscodeRequest& request,
             }
         });
 
-
-        // Detach, hogy fusson a háttérben függetlenül
         publishing_thread.detach();
 
     } catch (const std::exception& e) {
@@ -1014,8 +1019,6 @@ DoSubscriber(const std::string& root_namespace,
 
     auto sub_util = std::make_shared<SubscriberUtil>();
 
-
-    // 1) KATALÓGUS FELIRATKOZÁS
     auto cat_ftn = quicr::example::MakeFullTrackName("svc,"+root_namespace, "catalog");
 
     const auto catalog_track_handler = std::make_shared<CatalogSubscribeTrackHandler>(
@@ -1035,7 +1038,6 @@ DoSubscriber(const std::string& root_namespace,
     }
     SPDLOG_INFO("Catalog loaded.");
 
-    // 2. Publish Delta Updates (n-transcode_delta / t-[EndpointID])
     std::string delta_ns = "svc,"+root_namespace + ",delta," + client->getEndpointID();
     std::string delta_track_name = "data";
     auto delta_ftn = quicr::example::MakeFullTrackName(delta_ns, delta_track_name);
@@ -1077,8 +1079,6 @@ DoSubscriber(const std::string& root_namespace,
 
             Catalog catalog_snapshot = catalog_track_handler->GetCatalogCopy();
 
-            // MÓDOSÍTÁS: Közvetlen hívás, nem detacholt thread.
-            // A HandleTranscodeRequest elvégzi a setupot, majd elindítja a saját belső szálát a publikáláshoz.
             HandleTranscodeRequest(req,
                                    catalog_snapshot,
                                    delta_track_handler,
@@ -1219,15 +1219,13 @@ main(int argc, char* argv[])
     cxxopts::Options options("qclient",
                              std::string("MOQ Example Client using QuicR Version: ") + std::string(QUICR_VERSION));
 
-    // clang-format off
     options.set_width(75)
       .set_tab_expansion()
-      //.allow_unrecognised_options()
       .add_options()
         ("h,help", "Print help")
-        ("d,debug", "Enable debugging") // a bool parameter
-        ("t,trace", "Enable tracing") // a bool parameter
-        ("v,version", "QuicR Version")                                        // a bool parameter
+        ("d,debug", "Enable debugging")
+        ("t,trace", "Enable tracing")
+        ("v,version", "QuicR Version")
         ("r,url", "Relay URL", cxxopts::value<std::string>()->default_value("moq://localhost:1234"))
         ("e,endpoint_id", "This client endpoint ID", cxxopts::value<std::string>()->default_value("moq-client"))
         ("q,qlog", "Enable qlog using path", cxxopts::value<std::string>())
@@ -1252,7 +1250,6 @@ main(int argc, char* argv[])
         ("start_object", "The starting object ID within the group", cxxopts::value<uint64_t>())
         ("end_object", "One past the final object ID in the group", cxxopts::value<uint64_t>());
 
-    // clang-format on
 
     auto result = options.parse(argc, argv);
 
@@ -1261,10 +1258,8 @@ main(int argc, char* argv[])
         return EXIT_SUCCESS;
     }
 
-    // Install a signal handlers to catch operating system signals
     installSignalHandlers();
 
-    // Lock the mutex so that main can then wait on it
     std::unique_lock lock(moq_example::main_mutex);
 
     bool enable_pub{ false };

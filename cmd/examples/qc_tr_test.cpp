@@ -590,8 +590,9 @@ DoSubscriber(const std::string& track_namespace,
     auto track_handler = std::make_shared<TranscodeSubscribeTrackHandler>(quicr::example::MakeFullTrackName(subtrack->track_entry.track_namespace_, it->name),
         quicr::messages::FilterType::kNextGroupStart,
         joining_fetch,
-        subtrack,
-        transcode_client);
+        subtrack);
+
+    track_handler->AddTranscodeClient(transcode_client);
 
 
 

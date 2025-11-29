@@ -321,7 +321,7 @@ void RunRequestLogic(std::string root_ns, std::shared_ptr<RequestClient> client,
     // 5. Várakozás az új sávra a katalógusban
     std::cout << "Request sent. Waiting for transcoded track to appear in catalog..." << std::endl;
 
-    std::string track_name_hint = "tran_" + my_id + "_" + std::to_string(target_height) + "p";
+    std::string track_name_hint = "tran_[some_id]_" + std::to_string(target_height) + "p";
 // 5. Várakozás az új sávra
     std::cout << "Request sent. Waiting for transcoded track (" << track_name_hint << ") to appear in catalog..." << std::endl;
 
