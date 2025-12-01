@@ -48,7 +48,7 @@ using namespace quicr;
 class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
 {
 
-    std::shared_ptr<SubTrack> track_; // this has to be set with InitMediaTrack for media tracks if "catalog == false"
+    std::shared_ptr<SubTrack> track_;
 
     std::shared_ptr<SubscriberGst> gst_callback_;
 
@@ -101,7 +101,6 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
     void SetStopNotify(std::shared_ptr<std::atomic_bool> stop)
     {
         stop_notify = stop;
-        //start_notify = nullptr;
     }
 
     void ObjectReceived(const quicr::ObjectHeaders& hdr, quicr::BytesSpan data) override
@@ -114,8 +113,6 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         }
 
         std::string s(reinterpret_cast<const char*>(GetFullTrackName().name.data()), GetFullTrackName().name.size());
-        // SPDLOG_INFO("Received message on {0}: Group:{1}, Object:{2}", s, hdr.group_id, hdr.object_id);
-
 
         const bool is_video = (track_->track_entry.type == "video");
         const bool is_audio = (track_->track_entry.type == "audio");
@@ -151,12 +148,6 @@ class VideoSubscribeTrackHandler : public quicr::SubscribeTrackHandler
             gst_callback_->VideoPushFragment(data.data(), data.size(), is_group0);
         } else if (is_audio) {
             gst_callback_->AudioPushFragment(data.data(), data.size(), is_group0);
-        }
-
-        {
-            std::ofstream out(track_->track_entry.name + ".txt", std::ios::app);
-            out << "group: " << hdr.group_id << ", object: " << hdr.object_id
-                << ", data size:\n" << data.size() << std::endl;
         }
 
         SPDLOG_INFO("Pushed fragment for gstream track: {}, Group:{}, Object:{}",

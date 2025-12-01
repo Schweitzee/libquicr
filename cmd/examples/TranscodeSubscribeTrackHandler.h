@@ -22,12 +22,11 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
     struct ClientContext {
         std::shared_ptr<transcode::TranscodeClient> client;
         bool waiting_for_keyframe;
-        std::string id; // Debugginghoz
+        std::string id;
     };
 
     std::shared_ptr<SubTrack> track_; 
-    
-    // MÓDOSÍTÁS: Pointereket tárolunk, hogy másolható legyen a lista a mutexen kívülre
+
     std::vector<std::shared_ptr<ClientContext>> transcode_clients_;
     std::mutex clients_mutex_;
 
@@ -46,8 +45,8 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
         std::lock_guard<std::mutex> lock(clients_mutex_);
         auto ctx = std::make_shared<ClientContext>();
         ctx->client = client;
-        ctx->waiting_for_keyframe = true; // Mindig true-val kezdünk
-        ctx->id = std::to_string((uintptr_t)client.get()); // Egyedi ID
+        ctx->waiting_for_keyframe = true;
+        ctx->id = std::to_string((uintptr_t)client.get());
         
         transcode_clients_.push_back(ctx);
         SPDLOG_INFO("Added transcode client [{}]. Total: {}", ctx->id, transcode_clients_.size());
@@ -71,17 +70,14 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
     {
         if (data.size() > 10 * 1024 * 1024) return;
 
-        // MoQ konvenció: Object 0 a csoport eleje/kulcskép
         bool is_keyframe = (hdr.object_id == 0);
 
-        // 1. LÉPÉS: SNAPSHOT KÉSZÍTÉSE (Mutex csak eddig kell)
         std::vector<std::shared_ptr<ClientContext>> active_clients_snapshot;
         {
             std::lock_guard<std::mutex> lock(clients_mutex_);
             if (transcode_clients_.empty()) return;
-            active_clients_snapshot = transcode_clients_; // Gyors másolás (csak pointerek)
-        } 
-        // ITT MÁR NINCS MUTEX ZÁROLÁS -> Nem blokkoljuk az Add/Remove hívásokat!
+            active_clients_snapshot = transcode_clients_;
+        }
 
         for (auto& ctx : active_clients_snapshot) {
             if (!ctx->client) continue;
@@ -92,22 +88,15 @@ class TranscodeSubscribeTrackHandler : public quicr::SubscribeTrackHandler
                     ctx->waiting_for_keyframe = false;
                     SPDLOG_INFO("Client [{}] SYNCED on Group {}, Object {}", ctx->id, hdr.group_id, hdr.object_id);
                 } else {
-                    // Debug logot kiveheted, ha túl zajos
-                    // SPDLOG_TRACE("Client [{}] dropping packet (waiting for Keyframe)", ctx->id);
+
                     continue; 
                 }
             }
 
-            // Adatátadás + Hibakezelés + Időmérés (hogy lássuk, ki a lassú)
             try {
-                // Opcionális: Időmérés debug célból
-                // auto start = std::chrono::steady_clock::now();
                 
                 ctx->client->PushInputFragment(data.data(), data.size());
-                
-                // auto end = std::chrono::steady_clock::now();
-                // auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-                // if (diff > 10) SPDLOG_WARN("Slow processing on client [{}]: {}ms", ctx->id, diff);
+
 
             } catch (const std::exception& e) {
                 SPDLOG_ERROR("Client [{}] Error: {}", ctx->id, e.what());

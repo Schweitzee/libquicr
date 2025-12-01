@@ -94,11 +94,9 @@ public:
     uint16_t updateSequence() const { return update_sequence; }
     std::vector<CatalogTrackEntry>& tracks() { return tracks_; }
 
-    // Új track hozzáadása különböző típusokhoz
     void addTrack(const CatalogTrackEntry& entry) {
         CatalogTrackEntry e = entry;
         e.validate();
-        // Duplikált track név ellenőrzése (név + típuskategória egyedisége)
         for (const auto& x : tracks_) {
             if (CatalogTrackEntry::lowercase(x.type) == CatalogTrackEntry::lowercase(e.type) &&
                 x.name == e.name) {
@@ -151,7 +149,6 @@ public:
             j["supportsDeltaUpdates"] = true;
         }
         j["namespace"] = namespace_;
-        // Track-ek tömbje
         nlohmann::json tracks_array = nlohmann::json::array();
         for (const auto& e : tracks_) {
             nlohmann::json jt;
@@ -181,10 +178,8 @@ public:
         return pretty ? j.dump(2) : j.dump();
     }
 
-    // JSON deszerializálás a katalógus frissítésére (teljes csere)
     void from_json(const std::string& json_str) {
         nlohmann::json j = nlohmann::json::parse(json_str);
-        // Kötelező mezők ellenőrzése
         catalog_version = j.value("version", std::string("1"));
         streaming_format = j.value("streamingFormat", std::string("WARP"));
         streaming_format_version = j.value("streamingFormatVersion", std::string("1"));
@@ -217,7 +212,6 @@ public:
             if (jt.contains("lang"))       e.language = jt.at("lang").get<std::string>();
             if (jt.contains("label"))      e.label = jt.at("label").get<std::string>();
             e.validate();
-            // Duplikáció ellenőrzése (név + típus)
             for (const auto& x : tracks_) {
                 if (CatalogTrackEntry::lowercase(x.type) == CatalogTrackEntry::lowercase(e.type) &&
                     x.name == e.name) {
@@ -228,8 +222,6 @@ public:
         }
     }
 
-    // **Új funkció**: JSON delta patch alkalmazása a katalógusra
-    // CSAK track hozzáadást vagy eltávolítást engedélyez
     void applyDeltaUpdate(const std::string& patch_json) {
         nlohmann::json patch = nlohmann::json::parse(patch_json);
 
@@ -245,9 +237,7 @@ public:
             std::string op = operation.at("op").get<std::string>();
             std::string path = operation.at("path").get<std::string>();
 
-            // Csak /tracks/-hez való hozzáadást vagy /tracks/N eltávolítást engedélyezünk
             if (op == "add" && path == "/tracks/-") {
-                // Track hozzáadása a végére
                 if (!operation.contains("value")) {
                     throw std::invalid_argument("Add operation requires 'value'");
                 }
@@ -333,7 +323,6 @@ public:
         }
     }
 
-    // **Új funkció**: Katalógus patch készítése egy track entry-ből
     static std::string makeCatalogPatch(const CatalogTrackEntry& entry, bool remove = false) {
         nlohmann::json patch = nlohmann::json::array();
 
@@ -394,7 +383,6 @@ public:
         return patch.dump();
     }
 
-    // **Új funkció**: Track keresése név és típus alapján, visszaadja az indexet
     std::optional<size_t> findTrackIndex(const std::string& name, const std::string& type) const {
         std::string type_lower = CatalogTrackEntry::lowercase(type);
         for (size_t i = 0; i < tracks_.size(); ++i) {

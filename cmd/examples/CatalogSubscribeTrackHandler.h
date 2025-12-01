@@ -49,12 +49,10 @@ class CatalogSubscribeTrackHandler : public quicr::SubscribeTrackHandler
   private:
     std::shared_ptr<SubscriberUtil> util_;
 
-    // Thread synchronization for catalog updates
     mutable std::mutex catalog_mutex_;
     std::condition_variable catalog_cv_;
     std::atomic<bool> catalog_updated_{ false };
 
-    // Track first catalog vs delta updates
     bool initial_catalog_received_{ false };
 
   public:
@@ -87,7 +85,6 @@ class CatalogSubscribeTrackHandler : public quicr::SubscribeTrackHandler
             std::lock_guard<std::mutex> lock(catalog_mutex_);
 
             if (!initial_catalog_received_) {
-                // First object is the full catalog
                 SPDLOG_INFO("Processing initial catalog");
                 ProcessInitialCatalog(catalog_str);
                 initial_catalog_received_ = true;
@@ -95,7 +92,6 @@ class CatalogSubscribeTrackHandler : public quicr::SubscribeTrackHandler
                 catalog_updated_.store(true);
                 catalog_cv_.notify_all();
             } else {
-                // Subsequent objects are delta updates (JSON Patch)
                 SPDLOG_INFO("Processing catalog delta update");
                 ProcessDeltaUpdate(catalog_str);
                 catalog_updated_.store(true);

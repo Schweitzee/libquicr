@@ -117,7 +117,6 @@ moof_has_keyframe(const uint8_t* buf, size_t moof_off, size_t moof_size, size_t 
                         tfhd_has_default_flags = true;
                         p += 4;
                     }
-                    // tfhd megvolt, lépünk tovább
                 }
 
                 if (isz == 0)
@@ -125,7 +124,6 @@ moof_has_keyframe(const uint8_t* buf, size_t moof_off, size_t moof_size, size_t 
                 tOff += isz;
             }
 
-            // Második kör: trun-ok feldolgozása
             tOff = off + 8;
             while (tOff + 8 <= traf_end) {
                 if (tOff + 8 > len)
@@ -137,12 +135,10 @@ moof_has_keyframe(const uint8_t* buf, size_t moof_off, size_t moof_size, size_t 
                 uint32_t itype = (uint32_t(itypep[0]) << 24) | (uint32_t(itypep[1]) << 16) |
                                  (uint32_t(itypep[2]) << 8) | uint32_t(itypep[3]);
 
-                if (itype == 0x7472756Eu) { // "trun" (FullBox)
+                if (itype == 0x7472756Eu) {
                     size_t p = tOff + 8;
                     if (p + 4 > len)
                         break;
-                    // version(1) + flags(3)
-                    // uint8_t version = buf[p];
                     uint32_t trun_flags =
                       (uint32_t(buf[p + 1]) << 16) | (uint32_t(buf[p + 2]) << 8) | uint32_t(buf[p + 3]);
                     p += 4;
@@ -173,7 +169,6 @@ moof_has_keyframe(const uint8_t* buf, size_t moof_off, size_t moof_size, size_t 
                         p += 4;
                     }
 
-                    // minták bejárása
                     size_t cur = p;
                     for (uint32_t i = 0; i < sample_count; ++i) {
                         size_t rec = cur;
@@ -204,7 +199,7 @@ moof_has_keyframe(const uint8_t* buf, size_t moof_off, size_t moof_size, size_t 
                             flags_for_sample = tfhd_default_sample_flags;
                             got_flags = true;
                         } else {
-                            // formálisan: trex.default_sample_flags (INIT-ből)
+
                         }
 
                         if (has_sample_cto) {
@@ -214,10 +209,9 @@ moof_has_keyframe(const uint8_t* buf, size_t moof_off, size_t moof_size, size_t 
                         }
 
                         if (got_flags && sample_is_sync(flags_for_sample)) {
-                            return true; // bármelyik track-ben találtunk kulcsképet
+                            return true;
                         }
 
-                        // a következő rekord elejére ugrás
                         cur += (has_sample_duration ? 4 : 0) + (has_sample_size ? 4 : 0) + (has_sample_flags ? 4 : 0) +
                                (has_sample_cto ? 4 : 0);
                     }
@@ -236,7 +230,6 @@ moof_has_keyframe(const uint8_t* buf, size_t moof_off, size_t moof_size, size_t 
     return false;
 }
 
-// ---- publikus: teljes fragment (moof+mdat) vizsgálata ----
 bool
 CmafChunkHasKeyframe(const uint8_t* buf, size_t len)
 {
@@ -308,7 +301,6 @@ FfmpegCmafSplitter::make_writer_for_stream(AVStream* in_st)
     }
     AVDictionary* movopts = nullptr;
 
-    // Alap movflags
     std::string flags = "empty_moov+cmaf+separate_moof+skip_trailer+faststart";
     if (in_st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
         flags += "+frag_every_frame";
@@ -316,10 +308,8 @@ FfmpegCmafSplitter::make_writer_for_stream(AVStream* in_st)
     }
     av_dict_set(&movopts, "movflags", flags.c_str(), 0);
 
-    // Flush viselkedés
     av_dict_set(&movopts, "flush_packets", "1", 0);
 
-    // Interleave késleltetés nullázása
     av_opt_set_int(tw->oc, "max_interleave_delta", 0, AV_OPT_SEARCH_CHILDREN);
     av_opt_set_int(tw->oc, "muxpreload", 0, AV_OPT_SEARCH_CHILDREN);
     av_opt_set_int(tw->oc, "muxdelay", 0, AV_OPT_SEARCH_CHILDREN);
@@ -388,7 +378,6 @@ FfmpegCmafSplitter::Run(const std::atomic<bool>& stop)
         // err = avformat_open_input(&ic, nullptr, nullptr, &opts);
     }
 
-    // ---- FÁJLBÓL OLVASÁS ----
     if (!ic) { // normál fájlos út
         err = avformat_open_input(&ic, cfg_.input_url.c_str(), nullptr, &opts);
     }
@@ -424,7 +413,6 @@ FfmpegCmafSplitter::Run(const std::atomic<bool>& stop)
         return err;
     }
 
-    // Create per-stream writers & emit INIT
     for (size_t i = 0; i < stream_indices_to_process.size(); ++i) {
         const unsigned int si = stream_indices_to_process[i];
         auto* st = ic->streams[si];
@@ -432,10 +420,8 @@ FfmpegCmafSplitter::Run(const std::atomic<bool>& stop)
         auto* tw = make_writer_for_stream(st);
         writers[static_cast<int>(si)] = tw;
 
-        // INIT
         SPDLOG_INFO("trying to call oninit {}", si);
         if (!tw->mbuf.data.empty()) {
-            // Az utolsó, ha az 'i' index elérte a feldolgozandó sávok számának végét.
             bool is_last_init = (i + 1 == stream_indices_to_process.size());
             adapter_.OnInit(static_cast<int>(si), tw->mbuf.data.data(), tw->mbuf.data.size(), is_last_init);
             tw->mbuf.data.clear();

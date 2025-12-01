@@ -100,7 +100,6 @@ SubscriberGst::BuildVideoPipeline_(const char* video_sink)
         return false;
     }
 
-    // Demux pad-added: link the first pad to vqueue sink (no caps filtering)
     g_signal_connect(vdemux_,
                      "pad-added",
                      G_CALLBACK(+[](GstElement* demux, GstPad* new_pad, gpointer user_data) {
@@ -115,7 +114,6 @@ SubscriberGst::BuildVideoPipeline_(const char* video_sink)
                      }),
                      vqueue_);
 
-    // Decodebin pad-added: try to link to vconv; ignore failure (user ensures correct type)
     g_signal_connect(vdec_,
                      "pad-added",
                      G_CALLBACK(+[](GstElement* decodebin, GstPad* new_pad, gpointer user_data) {
@@ -174,7 +172,6 @@ SubscriberGst::BuildAudioPipeline_(const char* audio_sink)
         return false;
     }
 
-    // Demux pad-added: link first pad to aqueue
     g_signal_connect(ademux_,
                      "pad-added",
                      G_CALLBACK(+[](GstElement* demux, GstPad* new_pad, gpointer user_data) {
@@ -189,7 +186,6 @@ SubscriberGst::BuildAudioPipeline_(const char* audio_sink)
                      }),
                      aqueue_);
 
-    // Decodebin pad-added: try to link to aconv; ignore failure
     g_signal_connect(adec_,
                      "pad-added",
                      G_CALLBACK(+[](GstElement* decodebin, GstPad* new_pad, gpointer user_data) {

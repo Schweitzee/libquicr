@@ -27,7 +27,6 @@ struct MP4Atom
     int track_id = -1; // Will be set for moof atoms
 };
 
-// Represents a complete fragment (moof+mdat pair), either moof and mdat, or whole_chunk, but both may not be empty
 struct MP4Chunk
 {
     MP4Atom moof;        // may be nothing
@@ -142,8 +141,7 @@ class PublisherSharedState
         if (!chunk_q.try_enqueue(prod_tok, std::move(chunk))) {
             // DROP-ON-FULL: csak ritkítva logoljunk
             auto d = ++dropped;
-            if ((d & ((1u << 10) - 1)) == 0) { // minden 1024. dropnál
-                // SPDLOG_DEBUG/INFO-ra állíthatod igény szerint:
+            if ((d & ((1u << 10) - 1)) == 0) {
                 SPDLOG_WARN("PublisherSharedState: queue full, dropped ~{} chunks total", d);
             }
         }

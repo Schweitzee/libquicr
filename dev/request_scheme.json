@@ -1,0 +1,289 @@
+{
+    "title": "TranscodeRequest",
+    "type": "object",
+    "required": [
+        "request_id",
+        "client_id",
+        "source",
+        "operations"
+    ],
+    "properties": {
+        "request_id": {
+            "type": "string",
+            "description": "A kérés azonosítója, tipikusan egyezik a request track utolsó komponensével (pl. request1)."
+        },
+        "client_id": {
+            "type": "string",
+            "description": "A kliens azonosítója (pl. hallgato1)."
+        },
+        "source": {
+            "type": "object",
+            "required": [
+                "track"
+            ],
+            "properties": {
+                "namespace": {
+                    "type": "string",
+                    "description": "Az eredeti track namespace-e (ha hiányzik, default pl. IB027/data)."
+                },
+                "track": {
+                    "type": "string",
+                    "description": "Az eredeti track neve a namespace-en belül (pl. projektor1, kamera1, hang1)."
+                }
+            },
+            "additionalProperties": false
+        },
+        "output": {
+            "type": "object",
+            "description": "Opcionális cél; ha hiányzik, a transzkóder default transcode namespace-et használ.",
+            "properties": {
+                "namespace": {
+                    "type": "string",
+                    "description": "A transzkódolt track cél namespace-e (default pl. IB027/transcode/data)."
+                },
+                "track_name_hint": {
+                    "type": "string",
+                    "description": "Javasolt kimeneti track-név; a transzkóder döntheti el, ténylegesen ezt használja-e."
+                }
+            },
+            "required": [],
+            "additionalProperties": false
+        },
+        "operations": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "description": "Video: felbontás módosítása.",
+                        "properties": {
+                            "type": {
+                                "const": "video.change_resolution"
+                            },
+                            "params": {
+                                "type": "object",
+                                "required": [
+                                    "width",
+                                    "height"
+                                ],
+                                "properties": {
+                                    "width": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": "Cél szélesség pixelben."
+                                    },
+                                    "height": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": "Cél magasság pixelben."
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "params"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "description": "Video: framerate módosítása.",
+                        "properties": {
+                            "type": {
+                                "const": "video.change_framerate"
+                            },
+                            "params": {
+                                "type": "object",
+                                "required": [
+                                    "target_fps"
+                                ],
+                                "properties": {
+                                    "target_fps": {
+                                        "type": "number",
+                                        "minimum": 1,
+                                        "description": "Cél fps (képkocka/másodperc)."
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "params"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "description": "Video: codec/bitráta módosítása.",
+                        "properties": {
+                            "type": {
+                                "const": "video.change_codec"
+                            },
+                            "params": {
+                                "type": "object",
+                                "required": [
+                                    "codec",
+                                    "bitrate_kbps"
+                                ],
+                                "properties": {
+                                    "codec": {
+                                        "type": "string",
+                                        "enum": [
+                                            "h264",
+                                            "av1",
+                                            "vp9"
+                                        ],
+                                        "description": "Kimeneti videó codec."
+                                    },
+                                    "bitrate_kbps": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": "Cél videó bitráta kbps-ben."
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "params"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "description": "Audio: automatikus felirat generálása a hangból.",
+                        "properties": {
+                            "type": {
+                                "const": "audio.generate_subtitles"
+                            },
+                            "params": {
+                                "type": "object",
+                                "required": [
+                                    "language"
+                                ],
+                                "properties": {
+                                    "language": {
+                                        "type": "string",
+                                        "description": "A generált felirat nyelve (pl. en, hu)."
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "params"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "description": "Audio: codec/bitráta módosítása.",
+                        "properties": {
+                            "type": {
+                                "const": "audio.change_codec"
+                            },
+                            "params": {
+                                "type": "object",
+                                "required": [
+                                    "codec",
+                                    "bitrate_kbps"
+                                ],
+                                "properties": {
+                                    "codec": {
+                                        "type": "string",
+                                        "enum": [
+                                            "aac",
+                                            "opus"
+                                        ],
+                                        "description": "Kimeneti audio codec."
+                                    },
+                                    "bitrate_kbps": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "description": "Cél audio bitráta kbps-ben."
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "params"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "description": "Subtitle: nyelv módosítása / fordítás.",
+                        "properties": {
+                            "type": {
+                                "const": "subtitle.change_language"
+                            },
+                            "params": {
+                                "type": "object",
+                                "required": [
+                                    "source_language",
+                                    "target_language"
+                                ],
+                                "properties": {
+                                    "source_language": {
+                                        "type": "string",
+                                        "description": "Eredeti felirat nyelve (pl. en)."
+                                    },
+                                    "target_language": {
+                                        "type": "string",
+                                        "description": "Cél felirat nyelve (pl. hu)."
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "params"
+                        ],
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "description": "Subtitle: formátum konverzió.",
+                        "properties": {
+                            "type": {
+                                "const": "subtitle.convert_format"
+                            },
+                            "params": {
+                                "type": "object",
+                                "required": [
+                                    "target_format"
+                                ],
+                                "properties": {
+                                    "target_format": {
+                                        "type": "string",
+                                        "enum": [
+                                            "webvtt",
+                                            "srt"
+                                        ],
+                                        "description": "Cél felirat formátum."
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "params"
+                        ],
+                        "additionalProperties": false
+                    }
+                ]
+            }
+        },
+    },
+    "additionalProperties": false
+}

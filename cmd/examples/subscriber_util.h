@@ -91,7 +91,7 @@ class SubscriberGst
 
     bool AudioPushFragment(const uint8_t* data, size_t len, bool is_rap);
 
-    // (Optional helper) Explicitly push an init (rarely needed if you use Select*)
+    // (Optional helper) Explicitly push an init
     bool VideoPushInit(const uint8_t* data, size_t len);
     bool AudioPushInit(const uint8_t* data, size_t len);
 
@@ -108,7 +108,6 @@ class SubscriberGst
     GstElement* video_src_{ nullptr };
     GstElement* audio_src_{ nullptr };
 
-    // We keep references to select internal elements for debugging if needed.
     GstElement* vtypefind_{ nullptr };
     GstElement* vdemux_{ nullptr };
     GstElement* vqueue_{ nullptr };

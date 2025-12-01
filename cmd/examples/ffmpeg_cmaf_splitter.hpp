@@ -33,13 +33,12 @@ struct FfmpegCmafSplitterConfig
     int analyzeduration_us = 0;
     std::string protocol_whitelist;
 
-    bool use_custom_stdin = false; // <- fájlból olvasáshoz KAPCSOLD KI
+    bool use_custom_stdin = false;
 
-    // új: fragmentálás finomhangolás + tempózás fájlból
-    bool frag_on_key = true;           // video: keyframe-szél mentén darabolás
-    int frag_duration_us = 500000;     // 500 ms
-    int min_frag_duration_us = 200000; // 200 ms
-    bool realtime_pace = true;         // fájl → „életszerű” tempó
+    bool frag_on_key = true;
+    int frag_duration_us = 500000;
+    int min_frag_duration_us = 200000;
+    bool realtime_pace = true;
 };
 
 using OnInitFn = std::function<int(int /*stream_index*/, const uint8_t*, size_t, bool last_init)>;

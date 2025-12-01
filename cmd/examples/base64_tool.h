@@ -46,8 +46,6 @@ namespace base64 {
         return out;
     }
 
-
-    // Dekód táblázat (standard, + és / jelekhez)
     inline const std::array<int8_t, 256>& decode_table()
     {
         static std::array<int8_t, 256> D{};
@@ -62,7 +60,6 @@ namespace base64 {
         return D;
     }
 
-    // Robusztus dekóder: kezel URL-safe-et, whitespace-et, data URI prefixet, paddinget
     inline std::vector<uint8_t> decode_to_uint8_vec(std::string_view in)
     {
         // 1) Ha data: URI, vágjuk le az előtagot a vesszőig
@@ -74,7 +71,6 @@ namespace base64 {
             in = in.substr(comma + 1);
         }
 
-        // 2) Normalizálás: minden whitespace eldobása; URL-safe (-/_) -> +/
         std::string norm;
         norm.reserve(in.size());
         bool saw_urlsafe = false;
@@ -83,7 +79,7 @@ namespace base64 {
             unsigned char c = static_cast<unsigned char>(in[i]);
 
             if (std::isspace(c))
-                continue; // minden ASCII whitespace törlése
+                continue;
 
             if (c == '-') {
                 norm.push_back('+');
@@ -96,12 +92,10 @@ namespace base64 {
                 continue;
             }
 
-            // Megengedett karakterek: A-Z a-z 0-9 + / =
             if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' ||
                 c == '=') {
                 norm.push_back(static_cast<char>(c));
             } else {
-                // Adjunk értelmes hibát pozícióval és kóddal
                 char msg[128];
                 std::snprintf(msg,
                               sizeof(msg),
@@ -113,13 +107,11 @@ namespace base64 {
             }
         }
 
-        // 3) Pótoljuk a paddinget 4-es többszörösre
         if (norm.size() % 4 != 0) {
             size_t pad = (4 - (norm.size() % 4)) % 4;
             norm.append(pad, '=');
         }
 
-        // 4) Tényleges dekódolás
         const auto& D = decode_table();
         std::vector<uint8_t> out;
         out.reserve((norm.size() / 4) * 3);
@@ -130,12 +122,12 @@ namespace base64 {
         for (size_t pos = 0; pos < norm.size(); ++pos) {
             unsigned char c = static_cast<unsigned char>(norm[pos]);
             if (c == '=') {
-                // padding -> a hátralevő részt ignoráljuk (csak whitespace/’=’ lehet)
+
                 break;
             }
             int8_t d = D[c];
             if (d < 0) {
-                // Ez elvileg nem fordulhat elő a fenti szűrés után
+
                 char msg[128];
                 std::snprintf(
                   msg, sizeof(msg), "base64: unexpected character after normalization at pos %zu: 0x%02X", pos, c);

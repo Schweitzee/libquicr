@@ -57,7 +57,6 @@ target_compile_definitions(qclient PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRAC
 add_executable(qc_video
         qc_video.cpp
         media.h
-        media.cpp
         catalog.hpp
         ffmpeg_cmaf_splitter.cpp
         ffmpeg_cmaf_splitter.hpp
@@ -96,7 +95,6 @@ target_compile_definitions(qc_video PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRA
 add_executable(qc_request
         qc_request.cpp
         media.h
-        media.cpp
         catalog.hpp
         subscriber_util.cpp
         VideoSubscribeTrackHandler.h

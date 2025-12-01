@@ -15,7 +15,6 @@
 #include <condition_variable>
 #include <atomic>
 
-// FFmpeg forward declarations (így nem kell include-olni a libav header-eket itt)
 struct AVFormatContext;
 struct AVCodecContext;
 struct AVFrame;
@@ -122,10 +121,6 @@ class TranscodeClient
     int video_stream_index_{ -1 };
 
     AVCodecContext* decoder_ctx_{ nullptr };
-    // Mivel az AVRational C struct, és forward deklaráltuk, pointerként tároljuk vagy
-    // a .cpp-ben kezeljük. Egyszerűbb itt tárolni a számlálót/nevezőt külön,
-    // vagy void*-ként, de a legegyszerűbb, ha "input_time_base_num/den"-t tárolunk.
-    // De hogy egyszerű maradjon a kód, használjunk int-eket a timebase-hez:
     int input_time_base_num_{1};
     int input_time_base_den_{1};
 

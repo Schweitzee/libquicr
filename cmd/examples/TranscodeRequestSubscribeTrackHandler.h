@@ -106,7 +106,7 @@ class TranscodeRequestSubscribeHandler : public quicr::SubscribeTrackHandler
   public:
     TranscodeRequestSubscribeHandler(const quicr::FullTrackName& full_track_name,
                                      const std::shared_ptr<TranscodeRequestQueue>& request_queue,
-                                     bool publisher_initiated = true) // publisher_initiated = true fontos itt!
+                                     bool publisher_initiated = true)
       : SubscribeTrackHandler(full_track_name,
                               3,
                               quicr::messages::GroupOrder::kAscending,

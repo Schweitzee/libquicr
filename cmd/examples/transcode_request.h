@@ -23,7 +23,6 @@ enum class TranscodePriority {
 };
 
 /// A támogatott operációk típusai.
-/// (Ha bővítesz, bővül ez az enum és az OperationVariant.)
 enum class OperationKind {
     VideoChangeResolution,
     VideoChangeFramerate,
@@ -34,7 +33,6 @@ enum class OperationKind {
     SubtitleConvertFormat
 };
 
-/// Forrás track leírása (JSON: "source")
 struct TranscodeSource {
     // Ha empty, akkor a kód default namespace-t használ, pl. "<root>/data".
     std::optional<std::string> ns;   // "namespace" mező

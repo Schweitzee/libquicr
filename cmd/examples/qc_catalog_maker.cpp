@@ -70,10 +70,6 @@ namespace qclient_vars {
 
 class CatalogMakerClient;
 
-/**
- * @brief Output Publisher
- * JAVÍTVA: Status::kOk kezelése, hogy az első feliratkozó is megkapja az adatot.
- */
 class CatalogMakerCatalogPublisher : public quicr::PublishTrackHandler {
     int group_id_ = 0;
     int object_id_ = 0;
@@ -321,7 +317,6 @@ public:
 
         SPDLOG_INFO("Publishing to: {}", pub_ftn.name_space.ToString() +"-catalog");
 
-        // Feliratkozás az eredetire (ez marad bbb/catalog)
         auto orig_ftn = quicr::example::MakeFullTrackName(root_namespace_, "catalog");
         auto orig_handler = std::make_shared<OriginalCatalogHandler>(orig_ftn, manager_);
         SubscribeTrack(orig_handler);
@@ -338,7 +333,6 @@ public:
                        quicr::messages::Location start, std::optional<quicr::messages::Location> end)
     {
         auto th = quicr::TrackHash(track_full_name);
-        // Megnézzük, van-e adat a cache-ben
         auto cache_entry_it = qclient_vars::cache.find(th.track_fullname_hash);
 
         if (cache_entry_it == qclient_vars::cache.end()) {
@@ -347,7 +341,6 @@ public:
         }
 
         auto& [_, cache] = *cache_entry_it;
-        // Lekérjük a kért tartományt
         const auto& cache_entries = cache.Get(start.group, end.has_value() && end->group != 0 ? end->group : cache.Size());
 
         if (cache_entries.empty()) {
@@ -358,7 +351,6 @@ public:
         // Elfogadjuk a kérést (OK)
         ResolveFetch(connection_handle, request_id, priority, group_order, { quicr::FetchResponse::ReasonCode::kOk, std::nullopt, std::nullopt });
 
-        // Külön szálon visszaküldjük a tárolt adatokat
         auto pub_fetch_h = quicr::PublishFetchHandler::Create(track_full_name, priority, request_id, group_order, 50000);
         BindFetchTrack(connection_handle, pub_fetch_h);
 
@@ -366,7 +358,6 @@ public:
             defer(UnbindFetchTrack(connection_handle, pub_fetch_h));
             for (const auto& entry : cache_entries) {
                 for (const auto& object : *entry) {
-                    // Ha van végpont megadva, ellenőrizzük
                     if (end.has_value() && end->object && object.headers.group_id == end->group && object.headers.object_id >= end->object) return;
 
                     SPDLOG_INFO("Serving Fetch Request: Group {}, Object {}", object.headers.group_id, object.headers.object_id);
@@ -382,7 +373,6 @@ public:
     }
 
     void JoiningFetchReceived(quicr::ConnectionHandle ch, uint64_t rid, const quicr::FullTrackName& ftn, const quicr::messages::JoiningFetchAttributes& attr) override {
-        // Joining fetch: A kért ponttól kezdve mindent küldünk
         FetchReceived(ch, rid, ftn, attr.priority, attr.group_order, { attr.joining_start, 0 }, std::nullopt);
     }
 
@@ -390,31 +380,23 @@ public:
         if (status == Status::kReady) SPDLOG_INFO("Client Connected and Ready");
     }
 
-    // ÚJ IMPLEMENTÁCIÓ
     void PublishNamespaceReceived(const quicr::TrackNamespace& track_namespace,
                                   const quicr::PublishNamespaceAttributes&) override
     {
         std::string ns_str = track_namespace.ToString();
         std::string my_root = "svc," + root_namespace_ + ",delta";
-        // 1. Ellenőrizzük, hogy a "mi" névterünkben történt-e (bbb,catalog_maker)
         if (ns_str.find(my_root) == 0) {
 
-            // 2. Szűrjük ki saját magunkat és a gyökeret
-            // Ha a kapott névtér PONTOSAN a gyökér, azt hagyjuk (azt mi hirdettük vagy a relay visszhangozza)
             if (ns_str == my_root) return;
 
-            // Ha ez egy al-névtér (pl. bbb,catalog_maker,transcoder_1), akkor az egy transzkódoló
             SPDLOG_INFO("New Transcoder Detected: {}", ns_str);
 
-            // A szabály szerint a track neve mindig "data"
             auto ftn = quicr::example::MakeFullTrackName(ns_str, "data");
 
-            // Endpoint ID kinyerése a névtér végéből (opcionális, logoláshoz)
-            std::string endpoint_id = ns_str.substr(my_root.length() + 1); // +1 a vessző miatt
+            std::string endpoint_id = ns_str.substr(my_root.length() + 1);
 
             auto handler = std::make_shared<DeltaInputHandler>(ftn, manager_, endpoint_id);
 
-            // Feliratkozás a "data" trackre
             SubscribeTrack(handler);
 
             {
@@ -424,8 +406,6 @@ public:
         }
     }
 
-    // A RÉGI PublishReceived-et ürítsd ki (vagy csak hagyd meg a NotSupported választ),
-    // mert már nem track push-al jön az adat.
     void PublishReceived(quicr::ConnectionHandle ch, uint64_t rid, const quicr::messages::PublishAttributes& pa) override {
         ResolvePublish(ch, rid, pa, { .reason_code = quicr::PublishResponse::ReasonCode::kNotSupported });
     }
