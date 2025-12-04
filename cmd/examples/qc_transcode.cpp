@@ -872,8 +872,9 @@ void HandleTranscodeRequest(const TranscodeRequest& request,
                     new_entry.init_binary_size = size;
                     new_entry.width = transcode_config.target_width;
                     new_entry.height = transcode_config.target_height;
-                    new_entry.idx = 9999;
+                    new_entry.idx = 4000 + std::hash<std::string>{}(req_id_str) % 1000;
                     new_entry.label = output_track_name;
+                    if (track_it->alt_group.has_value()) new_entry.alt_group = track_it->alt_group;
 
                     std::string patch_json = Catalog::makeCatalogPatch(new_entry, false);
 
